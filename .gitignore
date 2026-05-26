@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Виртуальное окружение
+venv/
+env/
+.env/
+.venv/
+
+# OUI-база (скачивается автоматически при первом запуске)
+data/
+
+# Сохранённые топологии (пользовательские файлы)
+*.json
+*.graphml
+!tests/fixtures/*.json
+
+# Логи
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/

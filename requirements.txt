@@ -1,0 +1,25 @@
+# Зависимости проекта «Сканер и редактор топологии сети»
+# Установка: pip install -r requirements.txt
+
+# Сканирование портов (требует системный nmap: sudo apt install nmap)
+python-nmap>=0.7.1
+
+# ARP-сканирование L2 (требует root/Npcap на Windows)
+scapy>=2.5.0
+
+# Граф и layout
+networkx>=3.0
+numpy>=1.24.0
+
+# GUI
+PyQt5>=5.15.0
+
+# SNMP-опрос (рекомендуется классическая версия 4.x)
+# При проблемах с новым pysnmp: pip uninstall pysnmp && pip install "pysnmp==4.4.12"
+pysnmp==4.4.12
+
+# Определение производителя по MAC (fallback если OUI-база не загружена)
+mac-vendor-lookup>=0.1.12
+
+# Тестирование
+pytest>=7.0
