@@ -42,6 +42,20 @@ FONT_SIZE             = 8
 MULTIHOMED_BORDER_CLR = "#f39c12"
 MULTIHOMED_BORDER_W   = 4
 
+# Бейджи открытых портов — отображаются рядом с иконкой узла
+# Формат: port → (текст, цвет_фона, цвет_текста)
+# Показываются только для соответствующих типов устройств
+PORT_BADGES: dict[int, tuple[str, str, str]] = {
+    3389: ("RDP",  "#e74c3c", "#ffffff"),   # красный — Remote Desktop
+    22:   ("SSH",  "#2ecc71", "#ffffff"),   # зелёный — SSH
+    23:   ("TEL",  "#e67e22", "#ffffff"),   # оранжевый — Telnet (небезопасно)
+    5900: ("VNC",  "#9b59b6", "#ffffff"),   # фиолетовый — VNC
+    5985: ("WRM",  "#1abc9c", "#ffffff"),   # бирюзовый — WinRM
+}
+
+# Типы устройств для которых показываем RDP-бейдж
+RDP_TYPES = {"windows_endpoint", "windows_server", "endpoint", "unknown"}
+
 
 # ─── Фоновый поток сканирования ──────────────────────────────────────────────
 
@@ -222,7 +236,12 @@ class NodeItem(QGraphicsItem):
 
     def boundingRect(self) -> QRectF:
         r = NODE_RADIUS + (MULTIHOMED_BORDER_W + 2 if self.device.is_multihomed else 0)
-        return QRectF(-r - 4, -r - 4, (r + 4) * 2, (r + 4) * 2 + 55)
+        # Добавляем место сверху для бейджей портов (до 4 бейджей × 15px)
+        badge_space = 15 * len([p for p in PORT_BADGES if p in self.device.open_ports])
+        badge_space = max(badge_space, 0)
+        return QRectF(-r - 4, -r - 4 - badge_space,
+                      (r + 4) * 2 + 36,
+                      (r + 4) * 2 + 55 + badge_space)
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         color = QColor(TYPE_COLORS.get(self.device.device_type, "#bdc3c7"))
@@ -249,6 +268,77 @@ class NodeItem(QGraphicsItem):
         painter.setFont(QFont("Arial", 7, QFont.Bold))
         painter.drawText(QRectF(-r, -r, r * 2, r * 2),
                          Qt.AlignCenter, self.device.ip)
+
+        # Бейджи открытых портов (RDP, SSH, Telnet и др.)
+        self._paint_port_badges(painter, r)
+
+    def _paint_port_badges(self, painter: QPainter, r: float) -> None:
+        """
+        Рисует маленькие цветные бейджи с названием порта
+        в правом верхнем углу иконки узла.
+
+        Правила показа:
+          - RDP (3389): только для windows_endpoint, windows_server, endpoint, unknown
+          - SSH (22):   только для linux_server, linux_endpoint, router, server
+          - Telnet (23): router, switch — как предупреждение о небезопасном протоколе
+          - VNC (5900), WinRM (5985): любые типы
+        """
+        dev        = self.device
+        ports      = set(dev.open_ports)
+        dtype      = dev.device_type
+        if not ports:
+            return
+
+        # Фильтруем порты по типу устройства
+        visible_ports = []
+        for port, (label, bg, fg) in PORT_BADGES.items():
+            if port not in ports:
+                continue
+            # RDP — только Windows-устройства
+            if port == 3389 and dtype not in RDP_TYPES:
+                continue
+            # SSH — только Linux/серверы/сетевое
+            if port == 22 and dtype not in {
+                "linux_server", "linux_endpoint", "router",
+                "switch", "firewall", "server", "unknown"
+            }:
+                continue
+            # Telnet — только сетевое оборудование
+            if port == 23 and dtype not in {"router", "switch", "bridge", "unknown"}:
+                continue
+            visible_ports.append((port, label, bg, fg))
+
+        if not visible_ports:
+            return
+
+        # Рисуем бейджи — стартуем от правого верхнего угла, идём вниз
+        badge_w  = 28   # ширина бейджа
+        badge_h  = 13   # высота бейджа
+        badge_r  = 3    # скругление углов
+        margin   = 2    # отступ между бейджами
+        start_x  = r - badge_w // 2 + 6     # правый край узла
+        start_y  = -r - badge_h - 2          # выше узла
+
+        painter.setFont(QFont("Arial", 6, QFont.Bold))
+
+        for i, (port, label, bg_hex, fg_hex) in enumerate(visible_ports):
+            bx = start_x
+            by = start_y + i * (badge_h + margin)
+
+            # Фон бейджа
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(QColor(bg_hex)))
+            painter.drawRoundedRect(
+                QRectF(bx, by, badge_w, badge_h), badge_r, badge_r
+            )
+
+            # Текст бейджа
+            painter.setPen(QPen(QColor(fg_hex)))
+            painter.drawText(
+                QRectF(bx, by, badge_w, badge_h),
+                Qt.AlignCenter,
+                label
+            )
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionHasChanged:
