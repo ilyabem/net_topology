@@ -15,6 +15,8 @@ net_topology.py — точка входа.
     python net_topology.py --subnets 192.168.1.0/24,10.0.0.0/24 --parallel
     python net_topology.py --load topology.json
     python net_topology.py --subnet 192.168.1.0/24 --no-gui
+    python net_topology.py --subnet 192.168.1.0/24 --no-gui --output result.json
+    python net_topology.py --subnet 192.168.1.0/24 --no-gui --output result.json --output-graphml result.graphml
 """
 
 import argparse
@@ -53,6 +55,10 @@ def parse_args() -> argparse.Namespace:
                    help="Параллельное сканирование подсетей")
     p.add_argument("--update-oui", action="store_true",
                    help="Обновить OUI-базу производителей и выйти")
+    p.add_argument("--output",     metavar="FILE",
+                   help="Сохранить топологию в JSON-файл (работает с --no-gui и без)")
+    p.add_argument("--output-graphml", metavar="FILE",
+                   help="Экспортировать топологию в GraphML-файл")
     return p.parse_args()
 
 
@@ -137,6 +143,40 @@ def print_cli_table(topology) -> None:
     print()
 
 
+# ─── Сохранение результатов ──────────────────────────────────────────────────
+
+def _save_output(args: argparse.Namespace, topology) -> None:
+    """
+    Сохраняет топологию в JSON и/или GraphML.
+    Вызывается в --no-gui режиме и опционально перед запуском GUI.
+
+    Флаги:
+      --output FILE          → topology.json
+      --output-graphml FILE  → topology.graphml
+    """
+    import os
+
+    output_path = getattr(args, "output", None)
+    if output_path:
+        if not output_path.endswith(".json"):
+            output_path += ".json"
+        try:
+            topology.save_json(output_path)
+            print(f"✓ Топология сохранена → {os.path.abspath(output_path)}")
+        except Exception as exc:
+            logger.error("Ошибка сохранения JSON: %s", exc)
+
+    graphml_path = getattr(args, "output_graphml", None)
+    if graphml_path:
+        if not graphml_path.endswith(".graphml"):
+            graphml_path += ".graphml"
+        try:
+            topology.export_graphml(graphml_path)
+            print(f"✓ GraphML экспортирован → {os.path.abspath(graphml_path)}")
+        except Exception as exc:
+            logger.error("Ошибка экспорта GraphML: %s", exc)
+
+
 # ─── main ─────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -198,7 +238,11 @@ def main() -> None:
 
     if args.no_gui:
         print_cli_table(topology)
+        _save_output(args, topology)
         return
+
+    # Сохраняем если --output указан (даже с GUI — до его запуска)
+    _save_output(args, topology)
 
     # GUI импортируется только здесь — нет циклического импорта
     from gui import run_gui
