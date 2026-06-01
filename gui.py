@@ -778,6 +778,20 @@ class MainWindow(QMainWindow):
         self.link_btn.setCheckable(True)
         self.link_btn.clicked.connect(self._toggle_link_mode)
 
+        # Кнопки управления видом
+        self.fit_btn  = QPushButton("⊡ Вписать")
+        self.fit_btn.setToolTip("Вписать всю схему в экран (Ctrl+F)")
+        self.fit_btn.clicked.connect(self._fit_view)
+
+        self.zoom_in_btn  = QPushButton("🔍+")
+        self.zoom_out_btn = QPushButton("🔍−")
+        self.zoom_in_btn.setMaximumWidth(36)
+        self.zoom_out_btn.setMaximumWidth(36)
+        self.zoom_in_btn.setToolTip("Увеличить (+)")
+        self.zoom_out_btn.setToolTip("Уменьшить (−)")
+        self.zoom_in_btn.clicked.connect(lambda: self.view.scale(1.25, 1.25))
+        self.zoom_out_btn.clicked.connect(lambda: self.view.scale(0.8, 0.8))
+
         cl.addWidget(QLabel("Подсети:"))
         cl.addWidget(self.subnets_edit)
         cl.addWidget(QLabel("Community:"))
@@ -787,14 +801,26 @@ class MainWindow(QMainWindow):
         cl.addSpacing(16)
         cl.addWidget(self.type_filter)
         cl.addWidget(self.link_btn)
+        cl.addSpacing(8)
+        cl.addWidget(self.fit_btn)
+        cl.addWidget(self.zoom_in_btn)
+        cl.addWidget(self.zoom_out_btn)
         cl.addStretch()
         vlayout.addWidget(ctrl)
 
         # ── Граф ────────────────────────────────────────────────────────────
         self.view = QGraphicsView()
         self.view.setRenderHint(QPainter.Antialiasing)
+        # RubberBandDrag — выделение рамкой
+        # ScrollHandDrag — перетаскивание canvas (переключается по Пробелу)
         self.view.setDragMode(QGraphicsView.RubberBandDrag)
         self.view.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.view.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
+        # Полосы прокрутки всегда видны когда сцена больше окна
+        self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        # Не ограничиваем sceneRect — сцена растягивается под содержимое
+        self.view.setScene(None)
         vlayout.addWidget(self.view)
 
         self.statusBar().showMessage("Готово")
@@ -820,8 +846,10 @@ class MainWindow(QMainWindow):
         em.addAction("🔄 Обновить OUI-базу...", self._update_oui_db)
 
         vm = mb.addMenu("Вид")
-        vm.addAction("Вписать в экран",  self._fit_view,    "Ctrl+F")
-        vm.addAction("Сбросить масштаб", self._reset_zoom,  "Ctrl+0")
+        vm.addAction("Вписать в экран",   self._fit_view,       "Ctrl+F")
+        vm.addAction("Сбросить масштаб",  self._reset_zoom,     "Ctrl+0")
+        vm.addAction("Увеличить",         lambda: self.view.scale(1.25, 1.25), "+")
+        vm.addAction("Уменьшить",         lambda: self.view.scale(0.80, 0.80), "-")
         vm.addSeparator()
         vm.addAction("Показать все типы", self.type_filter._check_all)
         vm.addAction("Скрыть все типы",   self.type_filter._uncheck_all)
@@ -835,6 +863,10 @@ class MainWindow(QMainWindow):
         self.view.setScene(scene)
         self._scene = scene
         self._update_status()
+        # Автоматически вписываем схему в экран после каждого обновления
+        # Небольшая задержка чтобы Qt успел отрисовать сцену
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(100, self._fit_view)
 
     def _on_changed(self) -> None:
         self._modified = True
@@ -1002,6 +1034,36 @@ class MainWindow(QMainWindow):
     def wheelEvent(self, event) -> None:
         f = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
         self.view.scale(f, f)
+
+    def keyPressEvent(self, event) -> None:
+        """
+        Горячие клавиши:
+          Пробел (удерживать) — режим перетаскивания canvas (ScrollHandDrag)
+          +/= — увеличить масштаб
+          - — уменьшить масштаб
+          F — вписать в экран
+          Ctrl+A — выделить всё
+        """
+        from PyQt5.QtCore import Qt as _Qt
+        key = event.key()
+        if key == _Qt.Key_Space:
+            self.view.setDragMode(QGraphicsView.ScrollHandDrag)
+        elif key in (_Qt.Key_Plus, _Qt.Key_Equal):
+            self.view.scale(1.25, 1.25)
+        elif key == _Qt.Key_Minus:
+            self.view.scale(0.80, 0.80)
+        elif key == _Qt.Key_F:
+            self._fit_view()
+        else:
+            super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event) -> None:
+        """При отпускании Пробела возвращаемся в режим выделения."""
+        from PyQt5.QtCore import Qt as _Qt
+        if event.key() == _Qt.Key_Space:
+            self.view.setDragMode(QGraphicsView.RubberBandDrag)
+        else:
+            super().keyReleaseEvent(event)
 
     def closeEvent(self, event) -> None:
         if self._modified:

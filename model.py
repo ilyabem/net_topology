@@ -478,12 +478,21 @@ class NetworkTopology:
             return
 
         n = len(self.graph.nodes)
-        # Адаптивный canvas: 90px на узел, минимум 800x600
-        side   = max(800, int(90 * math.sqrt(n)))
+
+        # Адаптивный canvas.
+        # Формула: 120px * sqrt(n) — даёт достаточно места для любого числа узлов.
+        #   18  узлов → 800×600   (минимум для малых сетей)
+        #   50  узлов → 1200×900
+        #   100 узлов → 1697×1272
+        #   200 узлов → 2400×1800
+        #   500 узлов → 3795×2846
+        # QGraphicsView автоматически добавляет полосы прокрутки
+        # когда сцена не вмещается в окно.
+        side   = max(800, int(120 * math.sqrt(n)))
         width  = side
         height = int(side * 0.75)
-        margin = 80
-        MIN_DIST = 72  # минимум между центрами (2.5 * NODE_RADIUS=28)
+        margin = max(80, int(side * 0.06))   # отступ 6% от края
+        MIN_DIST = max(72, int(side / max(n, 1) * 2.5))  # адаптивный MIN_DIST
 
         # k масштабируется под плотность
         k_val = max(1.5, 3.0 / math.sqrt(max(n, 1)))
