@@ -43,13 +43,12 @@ DEVICE_TYPES = [
     "windows_endpoint",
     "linux_endpoint",
     "printer",
-    "voip_phone",      # VoIP-телефон / IP-АТС
-    "mobile_device",   # мобильное устройство (Android / iOS / другое)
+    "voip_phone",
+    "mobile_device",
     "endpoint",
     "unknown",
 ]
 
-# Человекочитаемые метки для GUI (тип → метка)
 DEVICE_TYPE_LABELS: dict[str, str] = {
     "router":           "Маршрутизатор",
     "switch":           "Коммутатор",
@@ -67,7 +66,6 @@ DEVICE_TYPE_LABELS: dict[str, str] = {
     "unknown":          "Неизвестно",
 }
 
-# Группы типов для фильтра в GUI
 DEVICE_TYPE_GROUPS: dict[str, list[str]] = {
     "🔴 Сетевое оборудование": ["router", "switch", "bridge", "firewall"],
     "🟢 Серверы":              ["windows_server", "linux_server", "server"],
@@ -78,20 +76,20 @@ DEVICE_TYPE_GROUPS: dict[str, list[str]] = {
 }
 
 TYPE_COLORS: dict[str, str] = {
-    "router":           "#e74c3c",   # красный
-    "switch":           "#2980b9",   # синий
-    "bridge":           "#8e44ad",   # фиолетовый
-    "firewall":         "#e67e22",   # оранжевый
-    "windows_server":   "#16a085",   # бирюзовый
-    "linux_server":     "#27ae60",   # зелёный
-    "server":           "#1abc9c",   # светло-бирюзовый
-    "windows_endpoint": "#2c3e50",   # тёмно-синий
-    "linux_endpoint":   "#7f8c8d",   # серый
-    "printer":          "#f39c12",   # жёлтый
-    "voip_phone":      "#00bcd4",   # голубой
-    "mobile_device":   "#78909c",   # серо-синий
-    "endpoint":         "#95a5a6",   # светло-серый
-    "unknown":          "#bdc3c7",   # очень светлый серый
+    "router":           "#e74c3c",
+    "switch":           "#2980b9",
+    "bridge":           "#8e44ad",
+    "firewall":         "#e67e22",
+    "windows_server":   "#16a085",
+    "linux_server":     "#27ae60",
+    "server":           "#1abc9c",
+    "windows_endpoint": "#2c3e50",
+    "linux_endpoint":   "#7f8c8d",
+    "printer":          "#f39c12",
+    "voip_phone":      "#00bcd4",
+    "mobile_device":   "#78909c",
+    "endpoint":         "#95a5a6",
+    "unknown":          "#bdc3c7",
 }
 
 TYPE_SHAPES: dict[str, str] = {
@@ -170,7 +168,6 @@ class Device:
     is_multihomed: bool = False
 
     def __post_init__(self) -> None:
-        # Добавляем основной IP в список интерфейсов если его там нет
         if self.ip and not any(i.ip == self.ip for i in self.interfaces):
             self.interfaces.append(Interface(ip=self.ip, subnet=self.subnet))
 
@@ -209,13 +206,11 @@ class Device:
             data["position"] = tuple(data["position"])
         raw_ifaces = data.pop("interfaces", [])
         obj = cls(**data)
-        # Восстанавливаем интерфейсы (избегаем дубля с __post_init__)
         obj.interfaces = []
         for i in raw_ifaces:
             iface = Interface.from_dict(i) if isinstance(i, dict) else i
             if not any(x.ip == iface.ip for x in obj.interfaces):
                 obj.interfaces.append(iface)
-        # Убеждаемся что основной IP есть
         if obj.ip and not any(x.ip == obj.ip for x in obj.interfaces):
             obj.interfaces.insert(0, Interface(ip=obj.ip, subnet=obj.subnet))
         return obj
@@ -226,13 +221,6 @@ class Device:
 class NetworkTopology:
     """
     Хранилище топологии: граф NetworkX + словарь устройств.
-
-    Ключевые методы:
-      build_from_hosts()          — одна подсеть (обратная совместимость)
-      build_from_multi_subnet()   — несколько подсетей
-      merge_by_mac()              — авто-объединение по MAC
-      merge_devices()             — ручное объединение
-      split_device()              — ручное разделение
     """
 
     def __init__(self) -> None:
@@ -356,10 +344,6 @@ class NetworkTopology:
     # ── Merge by MAC ─────────────────────────────────────────────────────────
 
     def merge_by_mac(self) -> int:
-        """
-        Находит узлы с одинаковым нормализованным MAC, объединяет их.
-        Возвращает число объединённых групп.
-        """
         mac_groups: dict[str, list[str]] = {}
         for nid, dev in list(self.devices.items()):
             if not dev.mac:
@@ -470,31 +454,15 @@ class NetworkTopology:
     # ── Позиции ──────────────────────────────────────────────────────────────
 
     def _assign_positions(self) -> None:
-        """
-        Назначает координаты узлам.
-        Адаптивный canvas + принудительное разведение перекрывающихся узлов.
-        """
         if not self.graph.nodes:
             return
 
         n = len(self.graph.nodes)
-
-        # Адаптивный canvas.
-        # Формула: 120px * sqrt(n) — даёт достаточно места для любого числа узлов.
-        #   18  узлов → 800×600   (минимум для малых сетей)
-        #   50  узлов → 1200×900
-        #   100 узлов → 1697×1272
-        #   200 узлов → 2400×1800
-        #   500 узлов → 3795×2846
-        # QGraphicsView автоматически добавляет полосы прокрутки
-        # когда сцена не вмещается в окно.
         side   = max(800, int(120 * math.sqrt(n)))
         width  = side
         height = int(side * 0.75)
-        margin = max(80, int(side * 0.06))   # отступ 6% от края
-        MIN_DIST = max(72, int(side / max(n, 1) * 2.5))  # адаптивный MIN_DIST
-
-        # k масштабируется под плотность
+        margin = max(80, int(side * 0.06))
+        MIN_DIST = max(72, int(side / max(n, 1) * 2.5))
         k_val = max(1.5, 3.0 / math.sqrt(max(n, 1)))
 
         try:
@@ -515,7 +483,6 @@ class NetworkTopology:
                 pos[nd] = (ring * math.cos(angle) / rings,
                            ring * math.sin(angle) / rings)
 
-        # Нормализуем в пиксели
         xs    = [p[0] for p in pos.values()]
         ys    = [p[1] for p in pos.values()]
         xspan = max(max(xs) - min(xs), 1e-6)
@@ -527,7 +494,6 @@ class NetworkTopology:
             py = margin + (y - min(ys)) / yspan * (height - 2 * margin)
             pixel_pos[nid] = (px, py)
 
-        # Разводим перекрывающиеся узлы
         pixel_pos = self._spread_overlapping(
             pixel_pos, MIN_DIST, width, height, margin)
 
@@ -544,10 +510,6 @@ class NetworkTopology:
         margin: float,
         max_passes: int = 60,
     ) -> dict[str, tuple[float, float]]:
-        """
-        Итеративно отталкивает пары узлов ближе min_dist.
-        O(n^2 * passes) — приемлемо до ~500 узлов.
-        """
         pos   = {nid: list(p) for nid, p in positions.items()}
         nodes = list(pos.keys())
 
@@ -571,7 +533,6 @@ class NetworkTopology:
             if not moved:
                 break
 
-        # Прижимаем к границам
         for nid in pos:
             pos[nid][0] = max(margin, min(width  - margin, pos[nid][0]))
             pos[nid][1] = max(margin, min(height - margin, pos[nid][1]))

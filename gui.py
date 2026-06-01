@@ -11,6 +11,13 @@ gui.py — графический интерфейс редактора топо
   - Мультиинтерфейсные узлы: двойная золотистая рамка + ★.
   - Сканирование в фоновом QThread — GUI не зависает.
   - Исправлен циклический импорт: scan_subnet импортируется внутри ScanWorker.run().
+
+НОВОЕ v1.4:
+  - Визуальные зоны подсетей (SubnetZone) — полупрозрачные прямоугольники с подписью CIDR.
+  - Перетаскивание: ЛКМ = один узел, Shift+ЛКМ = вся подсеть.
+  - Удаление связей: Ctrl+Click на линии связи.
+  - Панель статистики: связи, активные IP, подсети.
+  - Подсказки в статус-баре.
 """
 
 from __future__ import annotations
@@ -25,8 +32,8 @@ from PyQt5.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF
 from PyQt5.QtWidgets import (
     QAction, QApplication, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QFileDialog, QFormLayout, QGraphicsItem,
-    QGraphicsLineItem, QGraphicsScene, QGraphicsTextItem, QGraphicsView,
-    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QGraphicsLineItem, QGraphicsRectItem, QGraphicsScene, QGraphicsTextItem,
+    QGraphicsView, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMenu, QMessageBox, QPushButton, QSplitter,
     QTextEdit, QVBoxLayout, QWidget, QFrame,
 )
@@ -43,21 +50,20 @@ MULTIHOMED_BORDER_CLR = "#f39c12"
 MULTIHOMED_BORDER_W   = 4
 
 # Бейджи открытых портов — отображаются рядом с иконкой узла
-# Формат: port → (текст, цвет_фона, цвет_текста)
-# Показываются только для соответствующих типов устройств
 PORT_BADGES: dict[int, tuple[str, str, str]] = {
-    3389: ("RDP",  "#e74c3c", "#ffffff"),   # красный — Remote Desktop
-    22:   ("SSH",  "#2ecc71", "#ffffff"),   # зелёный — SSH
-    23:   ("TEL",  "#e67e22", "#ffffff"),   # оранжевый — Telnet (небезопасно)
-    5900: ("VNC",  "#9b59b6", "#ffffff"),   # фиолетовый — VNC
-    5985: ("WRM",  "#1abc9c", "#ffffff"),   # бирюзовый — WinRM
+    3389: ("RDP",  "#e74c3c", "#ffffff"),
+    22:   ("SSH",  "#2ecc71", "#ffffff"),
+    23:   ("TEL",  "#e67e22", "#ffffff"),
+    5900: ("VNC",  "#9b59b6", "#ffffff"),
+    5985: ("WRM",  "#1abc9c", "#ffffff"),
 }
 
-# Типы устройств для которых показываем RDP-бейдж
 RDP_TYPES = {"windows_endpoint", "windows_server", "endpoint", "unknown"}
 
 
-# ─── Фоновый поток сканирования ──────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# Фоновый поток сканирования
+# ═══════════════════════════════════════════════════════════════════════════
 
 class ScanWorker(QThread):
     """Сканирование в фоне; lazy-импорт scan_subnet устраняет цикл."""
@@ -73,7 +79,6 @@ class ScanWorker(QThread):
 
     def run(self) -> None:
         try:
-            # Lazy-импорт: net_topology уже не импортирует gui на уровне модуля
             from net_topology import scan_subnet
             from concurrent.futures import ThreadPoolExecutor, as_completed
             from model import NetworkTopology
@@ -108,25 +113,21 @@ class ScanWorker(QThread):
             self.error.emit(str(e))
 
 
-# ─── Виджет фильтра типов (выпадающий список с чекбоксами) ──────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# Виджет фильтра типов (выпадающий список с чекбоксами)
+# ═══════════════════════════════════════════════════════════════════════════
 
 class TypeFilterCombo(QComboBox):
-    """
-    Выпадающий список с чекбоксами для каждого типа устройства.
-    Сгруппирован по категориям (сетевое оборудование / серверы / точки).
-    При изменении выбора испускает сигнал filter_changed.
-    """
     filter_changed = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self._checks: dict[str, QCheckBox] = {}   # тип → чекбокс
+        self._checks: dict[str, QCheckBox] = {}
         self._container = QWidget(self)
         layout = QVBoxLayout(self._container)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(2)
 
-        # Кнопки «Все» / «Ничего»
         btn_row = QWidget()
         btn_layout = QHBoxLayout(btn_row)
         btn_layout.setContentsMargins(0, 0, 0, 0)
@@ -140,12 +141,10 @@ class TypeFilterCombo(QComboBox):
         btn_layout.addWidget(none_btn)
         layout.addWidget(btn_row)
 
-        # Разделитель
         line = QFrame()
         line.setFrameShape(QFrame.HLine)
         layout.addWidget(line)
 
-        # Чекбоксы по группам
         for group_name, types in DEVICE_TYPE_GROUPS.items():
             lbl = QLabel(group_name)
             lbl.setStyleSheet("font-weight: bold; margin-top: 4px;")
@@ -153,7 +152,6 @@ class TypeFilterCombo(QComboBox):
             for dtype in types:
                 cb = QCheckBox(DEVICE_TYPE_LABELS.get(dtype, dtype))
                 cb.setChecked(True)
-                # Цветная точка через таблицу стилей
                 color = TYPE_COLORS.get(dtype, "#aaa")
                 cb.setStyleSheet(
                     f"QCheckBox::indicator:checked {{ background: {color}; "
@@ -168,7 +166,6 @@ class TypeFilterCombo(QComboBox):
         self.addItem("🔽 Фильтр типов устройств")
 
     def showPopup(self) -> None:
-        """Показываем наш виджет вместо стандартного выпадающего."""
         self._container.setWindowFlags(Qt.Popup)
         pos = self.mapToGlobal(QPointF(0, self.height()).toPoint())
         self._container.move(pos)
@@ -203,14 +200,139 @@ class TypeFilterCombo(QComboBox):
         self._on_change()
 
     def visible_types(self) -> set[str]:
-        """Набор типов, которые сейчас отмечены (видимы)."""
         return {t for t, cb in self._checks.items() if cb.isChecked()}
 
     def hidden_types(self) -> set[str]:
         return {t for t, cb in self._checks.items() if not cb.isChecked()}
 
 
-# ─── NodeItem ────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# SubnetZone — визуальная зона подсети
+# ═══════════════════════════════════════════════════════════════════════════
+
+class SubnetZone(QGraphicsRectItem):
+    """Полупрозрачная зона подсети с подписью CIDR."""
+
+    def __init__(self, cidr: str, parent=None) -> None:
+        super().__init__(parent)
+        self.cidr = cidr
+        self._node_items: list = []
+        self.setZValue(-100)          # Behind all nodes
+        self.setPen(QPen(QColor(100, 100, 100, 150), 2, Qt.DashLine))
+
+        # Generate color from CIDR hash
+        import hashlib
+        hue = int(hashlib.md5(cidr.encode()).hexdigest(), 16) % 360
+        self._color = QColor.fromHsv(hue, 80, 230, 60)
+        self.setBrush(QBrush(self._color))
+
+        self._label = QGraphicsTextItem(self)
+        self._label.setPlainText(f"  {cidr}  ")
+        self._label.setFont(QFont("Arial", 10, QFont.Bold))
+        self._label.setDefaultTextColor(QColor(50, 50, 50))
+        self._label.hide()
+
+    def update_geometry(self) -> None:
+        if not self._node_items:
+            self.setRect(0, 0, 0, 0)
+            self._label.hide()
+            self.hide()
+            return
+
+        rects = [item.sceneBoundingRect() for item in self._node_items
+                 if item.scene() and item.isVisible()]
+        if not rects:
+            self.hide()
+            return
+
+        min_x = min(r.left() for r in rects)
+        min_y = min(r.top() for r in rects)
+        max_x = max(r.right() for r in rects)
+        max_y = max(r.bottom() for r in rects)
+
+        padding = 50
+        self.setRect(
+            min_x - padding,
+            min_y - padding - 25,
+            max_x - min_x + padding * 2,
+            max_y - min_y + padding * 2 + 25,
+        )
+        self._label.setPos(min_x - padding + 5, min_y - padding - 20)
+        self._label.show()
+        self.show()
+
+    def add_node(self, item) -> None:
+        if item not in self._node_items:
+            self._node_items.append(item)
+            self.update_geometry()
+
+    def remove_node(self, item) -> None:
+        if item in self._node_items:
+            self._node_items.remove(item)
+            self.update_geometry()
+
+    def clear(self) -> None:
+        self._node_items.clear()
+        self.update_geometry()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# StatsOverlay — панель статистики
+# ═══════════════════════════════════════════════════════════════════════════
+
+class StatsOverlay(QGraphicsItem):
+    """Панель статистики поверх сцены (связи, активные IP, подсети)."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setZValue(1000)
+        self._bg = QGraphicsRectItem(self)
+        self._bg.setBrush(QBrush(QColor(255, 255, 255, 220)))
+        self._bg.setPen(QPen(QColor(100, 100, 100), 1))
+
+        self._title = QGraphicsTextItem("📊 Статистика", self)
+        self._title.setFont(QFont("Arial", 12, QFont.Bold))
+        self._title.setDefaultTextColor(QColor(30, 30, 30))
+        self._title.setPos(10, 5)
+
+        self._links_text = QGraphicsTextItem("Связей: 0", self)
+        self._links_text.setFont(QFont("Arial", 10))
+        self._links_text.setDefaultTextColor(QColor(50, 50, 50))
+        self._links_text.setPos(10, 30)
+
+        self._active_text = QGraphicsTextItem("Активных IP: 0", self)
+        self._active_text.setFont(QFont("Arial", 10))
+        self._active_text.setDefaultTextColor(QColor(50, 150, 50))
+        self._active_text.setPos(10, 50)
+
+        self._subnets_text = QGraphicsTextItem("Подсетей: 0", self)
+        self._subnets_text.setFont(QFont("Arial", 10))
+        self._subnets_text.setDefaultTextColor(QColor(50, 50, 50))
+        self._subnets_text.setPos(10, 70)
+
+        self._update_size()
+
+    def _update_size(self) -> None:
+        self._bg.setRect(0, 0, 180, 95)
+
+    def update_stats(self, links_count: int, active_ips: int, subnets_count: int) -> None:
+        self._links_text.setPlainText(f"Связей: {links_count}")
+        self._active_text.setPlainText(f"Активных IP: {active_ips}")
+        self._subnets_text.setPlainText(f"Подсетей: {subnets_count}")
+
+    def set_position(self, x: float, y: float) -> None:
+        self.setPos(x, y)
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(0, 0, 180, 95)
+
+    def paint(self, painter: QPainter, option, widget=None) -> None:
+        pass
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# NodeItem — узел с поддержкой перетаскивания одиночного / подсети
+# ═══════════════════════════════════════════════════════════════════════════
 
 class NodeItem(QGraphicsItem):
     """Узел на сцене. Мультиинтерфейсный — двойная золотая рамка."""
@@ -228,6 +350,7 @@ class NodeItem(QGraphicsItem):
         self._lbl = QGraphicsTextItem(self)
         self._lbl.setFont(QFont("Arial", FONT_SIZE))
         self._update_label()
+        self._modifiers_at_press = Qt.NoModifier
 
     def _update_label(self) -> None:
         self._lbl.setPlainText(self.device.label())
@@ -236,7 +359,6 @@ class NodeItem(QGraphicsItem):
 
     def boundingRect(self) -> QRectF:
         r = NODE_RADIUS + (MULTIHOMED_BORDER_W + 2 if self.device.is_multihomed else 0)
-        # Добавляем место сверху для бейджей портов (до 4 бейджей × 15px)
         badge_space = 15 * len([p for p in PORT_BADGES if p in self.device.open_ports])
         badge_space = max(badge_space, 0)
         return QRectF(-r - 4, -r - 4 - badge_space,
@@ -252,7 +374,6 @@ class NodeItem(QGraphicsItem):
         r      = NODE_RADIUS
         shape  = TYPE_SHAPES.get(self.device.device_type, "circle")
 
-        # Двойная рамка для мультиинтерфейсных
         if self.device.is_multihomed:
             painter.setPen(QPen(QColor(MULTIHOMED_BORDER_CLR),
                                 MULTIHOMED_BORDER_W, Qt.DashLine))
@@ -263,47 +384,31 @@ class NodeItem(QGraphicsItem):
         painter.setBrush(QBrush(color))
         _draw_shape(painter, shape, r)
 
-        # IP внутри
         painter.setPen(QPen(Qt.white if _is_dark(color) else Qt.black))
         painter.setFont(QFont("Arial", 7, QFont.Bold))
         painter.drawText(QRectF(-r, -r, r * 2, r * 2),
                          Qt.AlignCenter, self.device.ip)
 
-        # Бейджи открытых портов (RDP, SSH, Telnet и др.)
         self._paint_port_badges(painter, r)
 
     def _paint_port_badges(self, painter: QPainter, r: float) -> None:
-        """
-        Рисует маленькие цветные бейджи с названием порта
-        в правом верхнем углу иконки узла.
-
-        Правила показа:
-          - RDP (3389): только для windows_endpoint, windows_server, endpoint, unknown
-          - SSH (22):   только для linux_server, linux_endpoint, router, server
-          - Telnet (23): router, switch — как предупреждение о небезопасном протоколе
-          - VNC (5900), WinRM (5985): любые типы
-        """
-        dev        = self.device
-        ports      = set(dev.open_ports)
-        dtype      = dev.device_type
+        dev   = self.device
+        ports = set(dev.open_ports)
+        dtype = dev.device_type
         if not ports:
             return
 
-        # Фильтруем порты по типу устройства
         visible_ports = []
         for port, (label, bg, fg) in PORT_BADGES.items():
             if port not in ports:
                 continue
-            # RDP — только Windows-устройства
             if port == 3389 and dtype not in RDP_TYPES:
                 continue
-            # SSH — только Linux/серверы/сетевое
             if port == 22 and dtype not in {
                 "linux_server", "linux_endpoint", "router",
                 "switch", "firewall", "server", "unknown"
             }:
                 continue
-            # Telnet — только сетевое оборудование
             if port == 23 and dtype not in {"router", "switch", "bridge", "unknown"}:
                 continue
             visible_ports.append((port, label, bg, fg))
@@ -311,28 +416,23 @@ class NodeItem(QGraphicsItem):
         if not visible_ports:
             return
 
-        # Рисуем бейджи — стартуем от правого верхнего угла, идём вниз
-        badge_w  = 28   # ширина бейджа
-        badge_h  = 13   # высота бейджа
-        badge_r  = 3    # скругление углов
-        margin   = 2    # отступ между бейджами
-        start_x  = r - badge_w // 2 + 6     # правый край узла
-        start_y  = -r - badge_h - 2          # выше узла
+        badge_w  = 28
+        badge_h  = 13
+        badge_r  = 3
+        margin   = 2
+        start_x  = r - badge_w // 2 + 6
+        start_y  = -r - badge_h - 2
 
         painter.setFont(QFont("Arial", 6, QFont.Bold))
 
         for i, (port, label, bg_hex, fg_hex) in enumerate(visible_ports):
             bx = start_x
             by = start_y + i * (badge_h + margin)
-
-            # Фон бейджа
             painter.setPen(Qt.NoPen)
             painter.setBrush(QBrush(QColor(bg_hex)))
             painter.drawRoundedRect(
                 QRectF(bx, by, badge_w, badge_h), badge_r, badge_r
             )
-
-            # Текст бейджа
             painter.setPen(QPen(QColor(fg_hex)))
             painter.drawText(
                 QRectF(bx, by, badge_w, badge_h),
@@ -347,7 +447,23 @@ class NodeItem(QGraphicsItem):
             scene = self.scene()
             if scene and hasattr(scene, "update_edges_for_node"):
                 scene.update_edges_for_node(self.device.node_id)
+            if scene and hasattr(scene, "update_subnet_zone"):
+                scene.update_subnet_zone(self.device.subnet)
         return super().itemChange(change, value)
+
+    def mousePressEvent(self, event) -> None:
+        self._modifiers_at_press = event.modifiers()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._modifiers_at_press & Qt.ShiftModifier:
+            delta = event.scenePos() - event.lastScenePos()
+            scene = self.scene()
+            if scene and hasattr(scene, "move_subnet"):
+                scene.move_subnet(self.device.subnet, delta)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
 
     def hoverEnterEvent(self, e):
         self._hovered = True;  self.update(); super().hoverEnterEvent(e)
@@ -361,7 +477,9 @@ class NodeItem(QGraphicsItem):
         self.update()
 
 
-# ─── EdgeItem ────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# EdgeItem — связь с удалением по Ctrl+Click
+# ═══════════════════════════════════════════════════════════════════════════
 
 class EdgeItem(QGraphicsLineItem):
     def __init__(self, src: NodeItem, dst: NodeItem, label: str = "") -> None:
@@ -371,16 +489,42 @@ class EdgeItem(QGraphicsLineItem):
         self.edge_label = label
         self.setZValue(-1)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
+        self.setAcceptHoverEvents(True)
+        self._hovered = False
         self.update_position()
 
     def update_position(self) -> None:
         s, d = self.src_node.pos(), self.dst_node.pos()
         self.setLine(s.x(), s.y(), d.x(), d.y())
 
+    def hoverEnterEvent(self, event) -> None:
+        self._hovered = True
+        self.setCursor(Qt.PointingHandCursor)
+        self.update()
+        super().hoverEnterEvent(event)
+
+    def hoverLeaveEvent(self, event) -> None:
+        self._hovered = False
+        self.unsetCursor()
+        self.update()
+        super().hoverLeaveEvent(event)
+
+    def mousePressEvent(self, event) -> None:
+        if event.modifiers() & Qt.ControlModifier:
+            scene = self.scene()
+            if scene and hasattr(scene, "delete_edge"):
+                scene.delete_edge(
+                    self.src_node.device.node_id,
+                    self.dst_node.device.node_id
+                )
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
     def paint(self, painter, option, widget=None) -> None:
         if self.edge_label == "inter-subnet":
             pen = QPen(QColor("#e74c3c"), 2, Qt.DashDotLine)
-        elif self.isSelected():
+        elif self.isSelected() or self._hovered:
             pen = QPen(QColor("#e74c3c"), 2.5, Qt.DashLine)
         else:
             pen = QPen(QColor("#7f8c8d"), 1.5, Qt.SolidLine)
@@ -388,7 +532,9 @@ class EdgeItem(QGraphicsLineItem):
         super().paint(painter, option, widget)
 
 
-# ─── TopologyScene ────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# TopologyScene — основная сцена
+# ═══════════════════════════════════════════════════════════════════════════
 
 class TopologyScene(QGraphicsScene):
     topology_changed = pyqtSignal()
@@ -401,27 +547,46 @@ class TopologyScene(QGraphicsScene):
         self._visible_types: set[str] = visible_types or set(DEVICE_TYPES)
         self._node_items: dict[str, NodeItem] = {}
         self._edge_items: list[EdgeItem]       = []
+        self._subnet_zones: dict[str, SubnetZone] = {}
         self._link_mode = False
         self._link_src: Optional[NodeItem] = None
+        self._stats = StatsOverlay()
+        self.addItem(self._stats)
+        self._active_ips: set[str] = set()
         self._rebuild()
 
-    # ── Построение ───────────────────────────────────────────────────────────
+    # ── Построение ─────────────────────────────────────────────────────────
 
     def _rebuild(self) -> None:
         self.clear()
         self._node_items.clear()
         self._edge_items.clear()
+        self._subnet_zones.clear()
+        self._stats = StatsOverlay()
+        self.addItem(self._stats)
+
         for dev in self.topology.devices.values():
             item = self._add_node_item(dev)
-            # Скрываем если тип не в видимых
             item.setVisible(dev.device_type in self._visible_types)
         for src, dst, attrs in self.topology.links:
-            edge = self._add_edge_item(src, dst, attrs.get("label", ""))
+            self._add_edge_item(src, dst, attrs.get("label", ""))
+
+        self._update_stats()
+        self._update_stats_position()
 
     def _add_node_item(self, device: Device) -> NodeItem:
         item = NodeItem(device)
         self.addItem(item)
         self._node_items[device.node_id] = item
+
+        # Add to subnet zone
+        subnet = device.subnet or "unknown"
+        if subnet not in self._subnet_zones:
+            zone = SubnetZone(subnet)
+            self._subnet_zones[subnet] = zone
+            self.addItem(zone)
+        self._subnet_zones[subnet].add_node(item)
+
         return item
 
     def _add_edge_item(self, src_id: str, dst_id: str,
@@ -431,31 +596,29 @@ class TopologyScene(QGraphicsScene):
         if not si or not di:
             return None
         edge = EdgeItem(si, di, label)
-        # Связь видима только если оба конца видимы
         edge.setVisible(si.isVisible() and di.isVisible())
         self.addItem(edge)
         self._edge_items.append(edge)
         return edge
 
-    # ── Фильтрация ───────────────────────────────────────────────────────────
+    # ── Фильтрация ─────────────────────────────────────────────────────────
 
     def apply_filter(self, visible_types: set[str]) -> None:
-        """
-        Показывает/скрывает узлы и рёбра по набору видимых типов.
-        Не пересоздаёт сцену — только меняет visible у существующих элементов.
-        """
         self._visible_types = visible_types
         for nid, item in self._node_items.items():
-            dev     = self.topology.devices.get(nid)
+            dev = self.topology.devices.get(nid)
             visible = dev.device_type in visible_types if dev else True
             item.setVisible(visible)
-        # Рёбра видимы только если оба конца видимы
         for edge in self._edge_items:
             edge.setVisible(
                 edge.src_node.isVisible() and edge.dst_node.isVisible()
             )
+        # Update all subnet zones
+        for zone in self._subnet_zones.values():
+            zone.update_geometry()
+        self._update_stats()
 
-    # ── Обновление рёбер при перемещении узла ────────────────────────────────
+    # ── Обновление рёбер при перемещении узла ──────────────────────────────
 
     def update_edges_for_node(self, node_id: str) -> None:
         for edge in self._edge_items:
@@ -463,19 +626,54 @@ class TopologyScene(QGraphicsScene):
                     edge.dst_node.device.node_id == node_id):
                 edge.update_position()
 
-    # ── Добавление / удаление ────────────────────────────────────────────────
+    # ── Перемещение подсети (Shift+Drag) ───────────────────────────────────
+
+    def move_subnet(self, subnet: str, delta: QPointF) -> None:
+        for node in self._node_items.values():
+            if node.device.subnet == subnet:
+                node.moveBy(delta.x(), delta.y())
+        self.update_subnet_zone(subnet)
+        # Update all edges (nodes in subnet may be connected to outside)
+        for edge in self._edge_items:
+            edge.update_position()
+
+    def update_subnet_zone(self, subnet: str) -> None:
+        zone = self._subnet_zones.get(subnet)
+        if zone:
+            zone.update_geometry()
+
+    # ── Удаление связи (Ctrl+Click) ────────────────────────────────────────
+
+    def delete_edge(self, src_id: str, dst_id: str) -> None:
+        to_remove = [e for e in self._edge_items
+                     if (e.src_node.device.node_id == src_id and
+                         e.dst_node.device.node_id == dst_id) or
+                        (e.src_node.device.node_id == dst_id and
+                         e.dst_node.device.node_id == src_id)]
+        for edge in to_remove:
+            if edge.scene():
+                self.removeItem(edge)
+            self._edge_items.remove(edge)
+        # Also remove from topology model
+        self.topology.remove_link(src_id, dst_id)
+        self.topology_changed.emit()
+        self._update_stats()
+
+    # ── Добавление / удаление ──────────────────────────────────────────────
 
     def add_device(self, device: Device) -> None:
         self.topology.add_device(device)
         item = self._add_node_item(device)
         item.setVisible(device.device_type in self._visible_types)
         self.topology_changed.emit()
+        self._update_stats()
 
     def add_link_between(self, src_id: str, dst_id: str,
                          label: str = "manual") -> None:
         self.topology.add_link(src_id, dst_id, label)
         self._add_edge_item(src_id, dst_id, label)
         self.topology_changed.emit()
+        self._update_stats()
 
     def delete_device(self, node_id: str) -> None:
         to_rm = [e for e in self._edge_items
@@ -485,9 +683,14 @@ class TopologyScene(QGraphicsScene):
             self.removeItem(e); self._edge_items.remove(e)
         item = self._node_items.pop(node_id, None)
         if item:
+            # Remove from subnet zone
+            subnet = item.device.subnet or "unknown"
+            if subnet in self._subnet_zones:
+                self._subnet_zones[subnet].remove_node(item)
             self.removeItem(item)
         self.topology.remove_device(node_id)
         self.topology_changed.emit()
+        self._update_stats()
 
     def delete_selected_edge(self) -> None:
         for edge in list(self._edge_items):
@@ -498,8 +701,9 @@ class TopologyScene(QGraphicsScene):
                 self.removeItem(edge)
                 self._edge_items.remove(edge)
         self.topology_changed.emit()
+        self._update_stats()
 
-    # ── Объединение / разделение ─────────────────────────────────────────────
+    # ── Объединение / разделение ───────────────────────────────────────────
 
     def merge_nodes(self, primary_id: str, secondary_id: str) -> None:
         if self.topology.merge_devices(primary_id, secondary_id):
@@ -510,18 +714,22 @@ class TopologyScene(QGraphicsScene):
                 self.removeItem(e); self._edge_items.remove(e)
             item = self._node_items.pop(secondary_id, None)
             if item:
+                subnet = item.device.subnet or "unknown"
+                if subnet in self._subnet_zones:
+                    self._subnet_zones[subnet].remove_node(item)
                 self.removeItem(item)
             pi = self._node_items.get(primary_id)
             if pi:
                 pi.refresh()
             self._rebuild_edges()
             self.topology_changed.emit()
+            self._update_stats()
 
     def split_node(self, node_id: str, split_ip: str) -> None:
         new_id = self.topology.split_device(node_id, split_ip)
         if new_id:
             new_dev = self.topology.devices[new_id]
-            base    = self._node_items[node_id].pos()
+            base = self._node_items[node_id].pos()
             new_dev.position = (base.x() + 120, base.y() + 80)
             ni = self._add_node_item(new_dev)
             ni.setVisible(new_dev.device_type in self._visible_types)
@@ -529,6 +737,7 @@ class TopologyScene(QGraphicsScene):
             if pi:
                 pi.refresh()
             self.topology_changed.emit()
+            self._update_stats()
 
     def _rebuild_edges(self) -> None:
         for e in self._edge_items:
@@ -537,7 +746,7 @@ class TopologyScene(QGraphicsScene):
         for src, dst, attrs in self.topology.links:
             self._add_edge_item(src, dst, attrs.get("label", ""))
 
-    # ── Режим связи ──────────────────────────────────────────────────────────
+    # ── Режим связи ────────────────────────────────────────────────────────
 
     def start_link_mode(self) -> None:
         self._link_mode = True; self._link_src = None
@@ -562,7 +771,7 @@ class TopologyScene(QGraphicsScene):
             return
         super().mousePressEvent(event)
 
-    # ── Контекстное меню ─────────────────────────────────────────────────────
+    # ── Контекстное меню ───────────────────────────────────────────────────
 
     def contextMenuEvent(self, event) -> None:
         items = self.items(event.scenePos())
@@ -595,7 +804,6 @@ class TopologyScene(QGraphicsScene):
                     self.delete_device(dev.node_id)
             elif action == link_a:
                 self._link_src = node; self.start_link_mode()
-                self._link_src = node
             elif action == merge_a:
                 d = MergeDialog(dev, self.topology)
                 if d.exec_() == QDialog.Accepted and d.selected_id:
@@ -608,7 +816,9 @@ class TopologyScene(QGraphicsScene):
         elif edge:
             del_e = menu.addAction("🗑️  Удалить связь")
             if menu.exec_(event.screenPos()) == del_e:
-                edge.setSelected(True); self.delete_selected_edge()
+                self.delete_edge(
+                    edge.src_node.device.node_id,
+                    edge.dst_node.device.node_id)
         else:
             add_a = menu.addAction("➕  Добавить устройство")
             if menu.exec_(event.screenPos()) == add_a:
@@ -618,8 +828,29 @@ class TopologyScene(QGraphicsScene):
                     dev.position = (event.scenePos().x(), event.scenePos().y())
                     self.add_device(dev)
 
+    # ── Статистика ─────────────────────────────────────────────────────────
 
-# ─── Диалоги ─────────────────────────────────────────────────────────────────
+    def set_active_ips(self, ips: set[str]) -> None:
+        self._active_ips = ips
+        self._update_stats()
+
+    def _update_stats(self) -> None:
+        links = len(self._edge_items)
+        active = len(self._active_ips)
+        subnets = len(self._subnet_zones)
+        self._stats.update_stats(links, active, subnets)
+
+    def _update_stats_position(self) -> None:
+        if self.views():
+            view = self.views()[0]
+            viewport = view.viewport()
+            top_right = view.mapToScene(viewport.width() - 200, 10)
+            self._stats.set_position(top_right.x(), top_right.y())
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Диалоги
+# ═══════════════════════════════════════════════════════════════════════════
 
 class DeviceEditDialog(QDialog):
     def __init__(self, device: Device, topology: NetworkTopology,
@@ -728,7 +959,9 @@ class SplitDialog(QDialog):
             self.selected_ip = it.data(Qt.UserRole); self.accept()
 
 
-# ─── MainWindow ──────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# MainWindow
+# ═══════════════════════════════════════════════════════════════════════════
 
 class MainWindow(QMainWindow):
     def __init__(self, topology: NetworkTopology) -> None:
@@ -744,7 +977,7 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._refresh_scene()
 
-    # ── UI ───────────────────────────────────────────────────────────────────
+    # ── UI ─────────────────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
         root   = QWidget()
@@ -752,7 +985,7 @@ class MainWindow(QMainWindow):
         vlayout = QVBoxLayout(root)
         vlayout.setContentsMargins(0, 0, 0, 0)
 
-        # ── Панель управления ────────────────────────────────────────────────
+        # ── Панель управления ────────────────────────────────────────────
         ctrl = QWidget()
         cl   = QHBoxLayout(ctrl)
         cl.setContentsMargins(6, 4, 6, 4)
@@ -770,7 +1003,6 @@ class MainWindow(QMainWindow):
         self.scan_btn = QPushButton("▶ Сканировать")
         self.scan_btn.clicked.connect(self._on_scan)
 
-        # Фильтр типов
         self.type_filter = TypeFilterCombo()
         self.type_filter.filter_changed.connect(self._on_filter_changed)
 
@@ -778,7 +1010,6 @@ class MainWindow(QMainWindow):
         self.link_btn.setCheckable(True)
         self.link_btn.clicked.connect(self._toggle_link_mode)
 
-        # Кнопки управления видом
         self.fit_btn  = QPushButton("⊡ Вписать")
         self.fit_btn.setToolTip("Вписать всю схему в экран (Ctrl+F)")
         self.fit_btn.clicked.connect(self._fit_view)
@@ -808,21 +1039,26 @@ class MainWindow(QMainWindow):
         cl.addStretch()
         vlayout.addWidget(ctrl)
 
-        # ── Граф ────────────────────────────────────────────────────────────
+        # ── Граф ──────────────────────────────────────────────────────────
         self.view = QGraphicsView()
         self.view.setRenderHint(QPainter.Antialiasing)
-        # RubberBandDrag — выделение рамкой
-        # ScrollHandDrag — перетаскивание canvas (переключается по Пробелу)
         self.view.setDragMode(QGraphicsView.RubberBandDrag)
         self.view.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.view.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
-        # Полосы прокрутки всегда видны когда сцена больше окна
         self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        # Не ограничиваем sceneRect — сцена растягивается под содержимое
         self.view.setScene(None)
         vlayout.addWidget(self.view)
 
+        # ── Подсказки в статус-баре ─────────────────────────────────────
+        self._help_label = QLabel(
+            "🖱️ ЛКМ — перемещение узла  |  "
+            "🖱️ Shift+ЛКМ — перемещение подсети  |  "
+            "🖱️ Ctrl+Click на связи — удаление  |  "
+            "🖱️ ПКМ — контекстное меню  |  "
+            "🖱️ Колёсико — масштаб"
+        )
+        self.statusBar().addPermanentWidget(self._help_label)
         self.statusBar().showMessage("Готово")
 
     def _build_menu(self) -> None:
@@ -863,8 +1099,6 @@ class MainWindow(QMainWindow):
         self.view.setScene(scene)
         self._scene = scene
         self._update_status()
-        # Автоматически вписываем схему в экран после каждого обновления
-        # Небольшая задержка чтобы Qt успел отрисовать сцену
         from PyQt5.QtCore import QTimer
         QTimer.singleShot(100, self._fit_view)
 
@@ -882,7 +1116,6 @@ class MainWindow(QMainWindow):
         multi  = sum(1 for d in self.topology.devices.values()
                      if d.is_multihomed)
         hidden = len(self.type_filter.hidden_types())
-        # Информация об OUI-базе
         oui_info = ""
         try:
             from oui_db import OUIDatabase
@@ -894,15 +1127,17 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Устройств: {total}  (мульти: {multi}) | "
             f"Связей: {len(self.topology.links)} | "
-            f"Скрытых: {hidden}{oui_info}"
+            f"Скрытых: {hidden}{oui_info}",
+            0
         )
+        # Keep help label visible
+        self.statusBar().addPermanentWidget(self._help_label)
 
     def _on_filter_changed(self) -> None:
-        """Применяем фильтр к существующей сцене без пересоздания."""
         self._scene.apply_filter(self.type_filter.visible_types())
         self._update_status()
 
-    # ── Сканирование ─────────────────────────────────────────────────────────
+    # ── Сканирование ───────────────────────────────────────────────────────
 
     def _on_scan(self) -> None:
         raw = self.subnets_edit.text().strip()
@@ -926,7 +1161,10 @@ class MainWindow(QMainWindow):
 
     def _on_scan_done(self, topology: NetworkTopology) -> None:
         self.topology = topology
+        # Collect active IPs from scanned topology
+        active_ips = {dev.ip for dev in topology.devices.values()}
         self._refresh_scene()
+        self._scene.set_active_ips(active_ips)
         self.scan_btn.setEnabled(True)
         multi = sum(1 for d in topology.devices.values() if d.is_multihomed)
         self.statusBar().showMessage(
@@ -957,7 +1195,6 @@ class MainWindow(QMainWindow):
                                 f"Объединено групп: {n}")
 
     def _update_oui_db(self) -> None:
-        """Запускает обновление OUI-базы в фоне и показывает прогресс."""
         from PyQt5.QtCore import QThread, pyqtSignal as _sig
 
         class OUIWorker(QThread):
@@ -990,7 +1227,7 @@ class MainWindow(QMainWindow):
             self._scene.stop_link_mode()
             self._update_status()
 
-    # ── Файлы ────────────────────────────────────────────────────────────────
+    # ── Файлы ──────────────────────────────────────────────────────────────
 
     def _open_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -1027,6 +1264,7 @@ class MainWindow(QMainWindow):
 
     def _fit_view(self) -> None:
         self.view.fitInView(self._scene.sceneRect(), Qt.KeepAspectRatio)
+        self._scene._update_stats_position()
 
     def _reset_zoom(self) -> None:
         self.view.resetTransform()
@@ -1036,14 +1274,6 @@ class MainWindow(QMainWindow):
         self.view.scale(f, f)
 
     def keyPressEvent(self, event) -> None:
-        """
-        Горячие клавиши:
-          Пробел (удерживать) — режим перетаскивания canvas (ScrollHandDrag)
-          +/= — увеличить масштаб
-          - — уменьшить масштаб
-          F — вписать в экран
-          Ctrl+A — выделить всё
-        """
         from PyQt5.QtCore import Qt as _Qt
         key = event.key()
         if key == _Qt.Key_Space:
@@ -1058,12 +1288,16 @@ class MainWindow(QMainWindow):
             super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event) -> None:
-        """При отпускании Пробела возвращаемся в режим выделения."""
         from PyQt5.QtCore import Qt as _Qt
         if event.key() == _Qt.Key_Space:
             self.view.setDragMode(QGraphicsView.RubberBandDrag)
         else:
             super().keyReleaseEvent(event)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, '_scene') and self._scene:
+            self._scene._update_stats_position()
 
     def closeEvent(self, event) -> None:
         if self._modified:
@@ -1078,7 +1312,9 @@ class MainWindow(QMainWindow):
         event.accept()
 
 
-# ─── Вспомогательные ─────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# Вспомогательные
+# ═══════════════════════════════════════════════════════════════════════════
 
 def _draw_shape(painter: QPainter, shape: str, r: float) -> None:
     if shape == "circle":
