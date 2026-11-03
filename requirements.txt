@@ -1,5 +1,12 @@
 # Зависимости проекта «Сканер и редактор топологии сети»
 # Установка: pip install -r requirements.txt
+# Python 3.10+ (проверено на 3.10–3.14)
+
+# Граф топологии (раскладка написана на чистом Python — numpy не нужен)
+networkx>=3.0
+
+# GUI (QtSvg и QtPrintSupport входят в пакет: иконки, экспорт PDF)
+PyQt5>=5.15.0
 
 # Сканирование портов (требует системный nmap: sudo apt install nmap)
 python-nmap>=0.7.1
@@ -7,16 +14,10 @@ python-nmap>=0.7.1
 # ARP-сканирование L2 (требует root/Npcap на Windows)
 scapy>=2.5.0
 
-# Граф и layout
-networkx>=3.0
-numpy>=1.24.0
-
-# GUI
-PyQt5>=5.15.0
-
-# SNMP-опрос (рекомендуется классическая версия 4.x)
-# При проблемах с новым pysnmp: pip uninstall pysnmp && pip install "pysnmp==4.4.12"
-pysnmp==4.4.12
+# SNMP-опрос (необязательно). pysnmp 4.4.12 работает только на Python ≤ 3.11
+# (в 3.12 удалён модуль asyncore). На новых версиях Python установите
+# системную утилиту snmpget (net-snmp) — она подхватывается автоматически.
+pysnmp==4.4.12; python_version < "3.12"
 
 # Определение производителя по MAC (fallback если OUI-база не загружена)
 mac-vendor-lookup>=0.1.12

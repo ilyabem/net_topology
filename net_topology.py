@@ -3,7 +3,7 @@
 net_topology.py — точка входа.
 
 Установка:
-    pip install -r requirements.txt && pip install numpy pysnmp
+    pip install -r requirements.txt
 
 Внешние утилиты:
     nmap  — https://nmap.org/download.html
@@ -17,6 +17,10 @@ net_topology.py — точка входа.
     python net_topology.py --subnet 192.168.1.0/24 --no-gui
     python net_topology.py --subnet 192.168.1.0/24 --no-gui --output result.json
     python net_topology.py --subnet 192.168.1.0/24 --no-gui --output result.json --output-graphml result.graphml
+    python net_topology.py --subnet 192.168.1.0/24 --no-gui --export net.html --export net.drawio
+    python net_topology.py --load topology.json --no-gui --layout tree-lr --export net.svg
+
+Форматы --export (по расширению): .html .svg .drawio .graphml .csv .json
 """
 
 import argparse
@@ -59,6 +63,12 @@ def parse_args() -> argparse.Namespace:
                    help="Сохранить топологию в JSON-файл (работает с --no-gui и без)")
     p.add_argument("--output-graphml", metavar="FILE",
                    help="Экспортировать топологию в GraphML-файл")
+    p.add_argument("--export", metavar="FILE", action="append", default=[],
+                   help="Экспорт по расширению: .html .svg .drawio .graphml "
+                        ".csv .json (можно указать несколько раз)")
+    p.add_argument("--layout", choices=["tree", "tree-lr", "organic"],
+                   help="Раскладка схемы: tree (по умолчанию), tree-lr, "
+                        "organic. С --load перекладывает загруженную схему")
     return p.parse_args()
 
 
@@ -101,7 +111,9 @@ def scan_subnet(subnet: str, community: str,
     for host in hosts:
         analyzer.enrich(host)
 
-    return subnet, hosts, scanner.get_arp_table()
+    # get_arp_table() — эвристика «все соседи шлюза», а не реальные данные:
+    # связи теперь выводит модель (шлюз → коммутатор → устройства).
+    return subnet, hosts, None
 
 
 # ─── CLI-таблица ─────────────────────────────────────────────────────────────
@@ -176,14 +188,33 @@ def _save_output(args: argparse.Namespace, topology) -> None:
         except Exception as exc:
             logger.error("Ошибка экспорта GraphML: %s", exc)
 
+    from exporters import export_topology
+    for path in getattr(args, "export", None) or []:
+        try:
+            print(f"✓ Экспорт → {export_topology(topology, path)}")
+        except Exception as exc:
+            logger.error("Ошибка экспорта %s: %s", path, exc)
+
 
 # ─── main ─────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    # Консоль Windows (cp1251/cp866/cp1252) не умеет «→», «★» и т.п.
+    # При выводе в файл/канал кодировка берётся из локали (cp1252/cp1251) —
+    # переключаемся на UTF-8, чтобы не терять кириллицу в логах.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if stream.isatty():
+                stream.reconfigure(errors="replace")
+            else:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
     args     = parse_args()
     # Импортируем модель здесь — gui импортируется только если нужен
     from model import NetworkTopology
     topology = NetworkTopology()
+    topology.layout_mode = args.layout or "tree"
 
     # Обновление OUI-базы по запросу
     if getattr(args, 'update_oui', False):
@@ -196,6 +227,8 @@ def main() -> None:
     if args.load:
         logger.info("Загрузка из %s", args.load)
         topology.load_json(args.load)
+        if args.layout:
+            topology.apply_layout(args.layout)
 
     else:
         subnets = resolve_subnets(args)
@@ -247,7 +280,7 @@ def main() -> None:
     # GUI импортируется только здесь — нет циклического импорта
     from gui import run_gui
     logger.info("Запуск GUI")
-    run_gui(topology)
+    run_gui(topology, args.load)
 
 
 if __name__ == "__main__":

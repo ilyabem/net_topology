@@ -20,11 +20,12 @@ python -m venv venv_build
 # Зависимости
 Write-Host "[2/5] Установка зависимостей..." -ForegroundColor Yellow
 pip install --upgrade pip -q
-pip install pyinstaller PyQt5 networkx numpy python-nmap scapy "pysnmp==4.4.12" mac-vendor-lookup -q
+pip install pyinstaller -q
+pip install -r requirements.txt -q
 
 # Проверка
 Write-Host "[3/5] Проверка зависимостей..." -ForegroundColor Yellow
-$check = python -c "import PyQt5, networkx, numpy, nmap; print('OK')" 2>&1
+$check = python -c "import PyQt5.QtSvg, PyQt5.QtPrintSupport, networkx, nmap; print('OK')" 2>&1
 if ($check -ne "OK") {
     Write-Host "[ОШИБКА] Зависимости не установлены: $check" -ForegroundColor Red
     exit 1
