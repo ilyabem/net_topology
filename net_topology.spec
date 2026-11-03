@@ -53,6 +53,8 @@ a = Analysis(
         # pysnmp — только если установлен (Python <= 3.11)
         # mac-vendor-lookup
         'mac_vendor_lookup',
+        # Экспорт в Excel
+        'openpyxl',
         # Стандартная библиотека
         'ipaddress',
         'json',

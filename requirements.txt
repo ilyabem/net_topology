@@ -24,6 +24,9 @@ pysnmp==4.4.12; python_version < "3.12"
 # pysnmp 4.4.12 imports pyasn1.compat.octets, removed in pyasn1 0.6.1
 pyasn1<0.6.1; python_version < "3.12"
 
+# Excel export of the scanned IP address list (.xlsx)
+openpyxl>=3.1
+
 # MAC vendor lookup fallback (when the OUI database is not downloaded yet)
 mac-vendor-lookup>=0.1.12
 
