@@ -179,8 +179,10 @@ class NetworkScanner:
         Использует nmap -sn (ping scan) для поиска живых хостов.
         Работает без прав root, но менее точен в LAN.
         """
-        nm = nmap_lib.PortScanner()
         devices: list[Device] = []
+        nm = _make_port_scanner()
+        if nm is None:
+            return devices
         try:
             # -sn: только ping (без сканирования портов)
             # --host-timeout: защита от зависания
@@ -212,7 +214,9 @@ class NetworkScanner:
         Сканирует открытые порты для каждого хоста (быстрый режим).
         Обновляет поле open_ports у каждого Device.
         """
-        nm = nmap_lib.PortScanner()
+        nm = _make_port_scanner()
+        if nm is None:
+            return
         ip_list = " ".join(dev.ip for dev in hosts)
 
         try:
@@ -299,6 +303,21 @@ class NetworkScanner:
             if dev.ip != gateway_dev.ip
         ]
         return {gateway_dev.ip: neighbors}
+
+
+def _make_port_scanner():
+    """
+    nmap.PortScanner() бросает PortScannerError уже в конструкторе, если
+    пакет python-nmap установлен, а программа nmap — нет. Тогда сообщаем
+    об этом и продолжаем с результатами ARP вместо полного отказа.
+    """
+    try:
+        return nmap_lib.PortScanner()
+    except nmap_lib.PortScannerError as exc:
+        logger.error("Программа nmap не найдена — ping- и порт-скан пропущены "
+                     "(установите nmap: https://nmap.org/download.html). %s",
+                     str(exc).split(".")[0])
+        return None
 
 
 # ─── Утилита: ping через subprocess (Windows/Linux portable) ─────────────────

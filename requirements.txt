@@ -1,25 +1,31 @@
-# Зависимости проекта «Сканер и редактор топологии сети»
-# Установка: pip install -r requirements.txt
+# Net Topology - Python dependencies
+# Install: pip install -r requirements.txt
+# Python 3.10+ (tested on 3.10 - 3.14)
+#
+# Keep this file ASCII-only: older pip versions on Windows read it in the
+# locale code page (cp1252/cp1251) and fail on non-ASCII characters.
 
-# Сканирование портов (требует системный nmap: sudo apt install nmap)
-python-nmap>=0.7.1
-
-# ARP-сканирование L2 (требует root/Npcap на Windows)
-scapy>=2.5.0
-
-# Граф и layout
+# Topology graph (layout is pure Python, numpy is not required)
 networkx>=3.0
-numpy>=1.24.0
 
-# GUI
+# GUI (QtSvg and QtPrintSupport are included: icons, PDF export)
 PyQt5>=5.15.0
 
-# SNMP-опрос (рекомендуется классическая версия 4.x)
-# При проблемах с новым pysnmp: pip uninstall pysnmp && pip install "pysnmp==4.4.12"
-pysnmp==4.4.12
+# Port scanning (requires the nmap program: https://nmap.org/download.html)
+python-nmap>=0.7.1
 
-# Определение производителя по MAC (fallback если OUI-база не загружена)
+# L2 ARP scanning (requires root / Administrator + Npcap on Windows)
+scapy>=2.5.0
+
+# SNMP (optional). pysnmp 4.4.12 works only on Python <= 3.11 (asyncore was
+# removed in 3.12). On newer Python install the net-snmp "snmpget" utility,
+# it is picked up automatically.
+pysnmp==4.4.12; python_version < "3.12"
+# pysnmp 4.4.12 imports pyasn1.compat.octets, removed in pyasn1 0.6.1
+pyasn1<0.6.1; python_version < "3.12"
+
+# MAC vendor lookup fallback (when the OUI database is not downloaded yet)
 mac-vendor-lookup>=0.1.12
 
-# Тестирование
+# Tests
 pytest>=7.0

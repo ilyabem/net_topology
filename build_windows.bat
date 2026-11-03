@@ -24,10 +24,10 @@ call venv_build\Scripts\activate.bat
 echo [2/5] Установка зависимостей...
 pip install --upgrade pip -q
 pip install pyinstaller -q
-pip install PyQt5 networkx numpy python-nmap scapy pysnmp==4.4.12 mac-vendor-lookup -q
+pip install -r requirements.txt -q
 
 echo [3/5] Проверка установки...
-python -c "import PyQt5, networkx, numpy, nmap; print('OK — все зависимости установлены')"
+python -c "import PyQt5.QtSvg, PyQt5.QtPrintSupport, networkx, nmap; print('OK — все зависимости установлены')"
 if errorlevel 1 (
     echo [ОШИБКА] Не все зависимости установлены
     pause

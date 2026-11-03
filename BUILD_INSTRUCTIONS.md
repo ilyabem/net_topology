@@ -38,7 +38,8 @@ python -m venv venv_build
 venv_build\Scripts\activate.bat
 
 :: 2. Установить зависимости
-pip install pyinstaller PyQt5 networkx numpy python-nmap scapy pysnmp==4.4.12 mac-vendor-lookup
+pip install pyinstaller
+pip install -r requirements.txt
 
 :: 3. Собрать exe
 pyinstaller net_topology.spec --clean --noconfirm

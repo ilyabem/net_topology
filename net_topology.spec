@@ -31,11 +31,17 @@ a = Analysis(
         'networkx',
         'networkx.algorithms',
         'networkx.drawing',
-        # NumPy (для spring_layout)
-        'numpy',
-        'numpy.core',
-        'numpy.core._methods',
-        'numpy.lib.format',
+        'PyQt5.QtSvg',
+        'PyQt5.QtPrintSupport',
+        # Модули проекта (часть импортируется лениво)
+        'model',
+        'layout',
+        'visual',
+        'exporters',
+        'analyzer',
+        'scanner',
+        'oui_db',
+        'gui',
         # Scapy (опционально — большой, но нужен для ARP)
         'scapy',
         'scapy.all',
@@ -44,11 +50,7 @@ a = Analysis(
         # python-nmap
         'nmap',
         # pysnmp
-        'pysnmp',
-        'pysnmp.hlapi',
-        'pyasn1',
-        'pyasn1.type',
-        'pyasn1.codec',
+        # pysnmp — только если установлен (Python <= 3.11)
         # mac-vendor-lookup
         'mac_vendor_lookup',
         # Стандартная библиотека

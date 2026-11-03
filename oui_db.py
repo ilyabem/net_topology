@@ -34,9 +34,8 @@ import csv
 import io
 import json
 import logging
-import os
 import re
-import time
+import threading
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone
@@ -57,12 +56,16 @@ AUTO_UPDATE_DAYS = 60
 # Таймаут скачивания (сек)
 DOWNLOAD_TIMEOUT = 30
 
+_LOCK = threading.RLock()
+
 # URLs источников
+# Прежний адрес gitlab.com/wireshark/wireshark/-/raw/master/manuf
+# больше не существует (404) — Wireshark публикует файл здесь:
 WIRESHARK_URL = (
-    "https://gitlab.com/wireshark/wireshark/-/raw/master/manuf"
+    "https://www.wireshark.org/download/automated/data/manuf"
 )
 IEEE_OUI_URL = (
-    "http://standards-oui.ieee.org/oui/oui.csv"
+    "https://standards-oui.ieee.org/oui/oui.csv"
 )
 
 # ─── Паттерны классификации vendor → device_type ─────────────────────────────
@@ -254,18 +257,46 @@ VENDOR_TYPE_RULES: list[tuple[list[str], str, float]] = [
     ], "linux_server", 4.5),
     # ── Сетевые накопители (NAS) ─────────────────────────────────────────────
     ([
-        "synology incorporated", "synology", "qnap systems",
-    ], "linux_server", 4.5),
-    # ── IoT / embedded (не классифицируем точно → endpoint) ─────────────────
+        "synology incorporated", "synology", "qnap systems", "qnap",
+        "asustor", "buffalo", "western digital", "netapp",
+    ], "nas", 5.0),
+    # ── Hyper-V (00:15:5D) — виртуальные машины Windows-инфраструктуры ──────
+    ([
+        "microsoft",
+    ], "windows_server", 3.0),
+    # ── IP-камеры и видеорегистраторы ───────────────────────────────────────
+    ([
+        "hikvision", "hangzhou hikvision", "dahua", "zhejiang dahua",
+        "axis communications", "hanwha", "uniview", "vivotek", "mobotix",
+        "reolink",
+    ], "ip_camera", 6.5),
+    # ── Точки доступа Wi-Fi ─────────────────────────────────────────────────
+    ([
+        "ruckus", "ruckus wireless", "cambium networks", "aerohive",
+        "meraki",
+    ], "access_point", 5.0),
+    # ── IoT / embedded ──────────────────────────────────────────────────────
     ([
         "raspberry pi", "raspberrypi",
     ], "linux_endpoint", 4.0),
     ([
-        "espressif", "espressif inc",
-    ], "endpoint", 3.0),
+        "espressif", "espressif inc", "tuya", "shelly", "sonoff", "itead",
+        "particle industries", "silicon labs",
+    ], "iot", 4.0),
     ([
         "arduino",
-    ], "endpoint", 3.0),
+    ], "iot", 3.0),
+]
+
+
+def _keyword_regex(keyword: str) -> re.Pattern:
+    """Совпадение по границам слов: «hp» не находится внутри «shpe»."""
+    return re.compile(r"(?<![a-z0-9])" + re.escape(keyword) + r"(?![a-z0-9])")
+
+
+_COMPILED_RULES: list[tuple[list[re.Pattern], str, float]] = [
+    ([_keyword_regex(kw) for kw in keywords], dtype, weight)
+    for keywords, dtype, weight in VENDOR_TYPE_RULES
 ]
 
 
@@ -273,16 +304,77 @@ def vendor_to_device_type(vendor: str) -> tuple[str, float] | None:
     """
     По строке производителя возвращает (device_type, weight) или None.
     Использует VENDOR_TYPE_RULES — список паттернов с весами.
+    Сравнение регистронезависимое и по границам слов.
     """
     if not vendor:
         return None
     vendor_lower = vendor.lower()
     best: tuple[str, float] | None = None
-    for keywords, dtype, weight in VENDOR_TYPE_RULES:
-        if any(kw in vendor_lower for kw in keywords):
+    for patterns, dtype, weight in _COMPILED_RULES:
+        if any(p.search(vendor_lower) for p in patterns):
             if best is None or weight > best[1]:
                 best = (dtype, weight)
     return best
+
+
+def short_vendor(vendor: str | None) -> str:
+    """Короткое имя производителя для подписей: «Cisco Systems, Inc» → «Cisco Systems»."""
+    if not vendor:
+        return ""
+    name = re.sub(r"[,.]?\s*\b(inc|ltd|llc|corp|corporation|co|gmbh|ag|sa|"
+                  r"s\.a|limited|company|technologies|technology|"
+                  r"electronics)\b\.?", "", vendor, flags=re.IGNORECASE)
+    name = re.sub(r"[\s,.]+$", "", name).strip()
+    return name or vendor.strip()
+
+
+def parse_manuf(raw: str) -> dict[str, str]:
+    """
+    Разбирает файл Wireshark manuf.
+
+    Формат строк (поля разделены табуляцией):
+      AA:BB:CC            Short   Full Vendor Name          — MA-L (24 бита)
+      AA:BB:CC:D0:00:00/28 Short  Full Vendor Name          — MA-M (28 бит)
+      AA:BB:CC:DD:E0:00/36 Short  Full Vendor Name          — MA-S (36 бит)
+
+    Ключ — hex-префикс длиной (маска / 4) символов: 6, 7 или 9.
+    """
+    entries: dict[str, str] = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [p.strip() for p in re.split(r"\t+", line) if p.strip()]
+        if len(parts) < 2:
+            parts = [p for p in re.split(r"\s{2,}", line, maxsplit=2) if p]
+        if len(parts) < 2:
+            continue
+        prefix, _, mask = parts[0].partition("/")
+        hex_digits = re.sub(r"[^0-9A-Fa-f]", "", prefix).upper()
+        try:
+            bits = int(mask) if mask else len(hex_digits) * 4
+        except ValueError:
+            continue
+        if bits % 4 or bits < 24 or len(hex_digits) * 4 < bits:
+            continue
+        key = hex_digits[: bits // 4]
+        vendor = parts[2] if len(parts) >= 3 else parts[1]
+        entries[key] = vendor
+    return entries
+
+
+def _download(url: str) -> str:
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "NetTopologyScanner/2.0"})
+        resp = urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT)
+        try:
+            return resp.read().decode("utf-8", errors="replace")
+        finally:
+            resp.close()
+    except Exception as exc:  # noqa: BLE001 — сеть может быть недоступна
+        logger.warning("Ошибка загрузки %s: %s", url, exc)
+        return ""
 
 
 # ─── Класс базы данных OUI ───────────────────────────────────────────────────
@@ -309,9 +401,16 @@ class OUIDatabase:
     @classmethod
     def get(cls) -> "OUIDatabase":
         """Возвращает единственный экземпляр (создаёт при первом вызове)."""
-        if cls._instance is None:
-            cls._instance = cls()
-        return cls._instance
+        with _LOCK:
+            if cls._instance is None:
+                cls._instance = cls()
+            return cls._instance
+
+    def ensure_loaded(self, auto_update: bool = True) -> None:
+        """Потокобезопасная однократная загрузка (параллельные сканы подсетей)."""
+        with _LOCK:
+            if not self._loaded:
+                self.load(auto_update=auto_update)
 
     # ── Загрузка ─────────────────────────────────────────────────────────────
 
@@ -416,43 +515,8 @@ class OUIDatabase:
         Для MA-S/MA-M записей тоже берём первые 3 байта как OUI,
         но с более низким приоритетом (запись MA-L перекрывает если есть).
         """
-        entries: dict[str, str] = {}
-        try:
-            req  = urllib.request.Request(
-                WIRESHARK_URL,
-                headers={"User-Agent": "NetTopologyScanner/1.0"}
-            )
-            resp = urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT)
-            raw  = resp.read().decode("utf-8", errors="replace")
-        except Exception as exc:
-            logger.warning("Wireshark download error: %s", exc)
-            return {}
-
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-
-            # Разбиваем по пробелам/табуляции
-            parts = re.split(r"\t+|\s{2,}", line, maxsplit=2)
-            if len(parts) < 2:
-                continue
-
-            oui_raw  = parts[0].strip()
-            # Полное название — третий столбец (если есть), иначе второй
-            vendor   = parts[2].strip() if len(parts) >= 3 else parts[1].strip()
-
-            # Нормализуем OUI: оставляем только первые 3 байта (6 hex-символов)
-            oui_clean = re.sub(r"[:\-\./]", "", oui_raw).upper()
-            if len(oui_clean) < 6:
-                continue
-            oui6 = oui_clean[:6]
-
-            # Записи MA-L (ровно 6 hex) имеют приоритет над MA-S (>6 hex)
-            if oui6 not in entries or len(oui_clean) == 6:
-                entries[oui6] = vendor
-
-        return entries
+        raw = _download(WIRESHARK_URL)
+        return parse_manuf(raw) if raw else {}
 
     def _fetch_ieee_csv(self) -> dict[str, str]:
         """
@@ -463,15 +527,8 @@ class OUIDatabase:
           MA-L,AABBCC,Cisco Systems Inc,...
         """
         entries: dict[str, str] = {}
-        try:
-            req  = urllib.request.Request(
-                IEEE_OUI_URL,
-                headers={"User-Agent": "NetTopologyScanner/1.0"}
-            )
-            resp = urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT)
-            raw  = resp.read().decode("utf-8", errors="replace")
-        except Exception as exc:
-            logger.warning("IEEE OUI download error: %s", exc)
+        raw = _download(IEEE_OUI_URL)
+        if not raw:
             return {}
 
         reader = csv.DictReader(io.StringIO(raw))
@@ -509,8 +566,8 @@ class OUIDatabase:
         if len(clean) < 6:
             return None
 
-        # Пробуем от самого длинного префикса к самому короткому
-        for length in [12, 10, 8, 6]:
+        # От самого специфичного префикса (MA-S, 36 бит) к MA-L (24 бита)
+        for length in (9, 7, 6):
             if len(clean) >= length:
                 key = clean[:length]
                 if key in self._db:
