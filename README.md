@@ -97,6 +97,7 @@ pip install -r requirements.txt
 | `python-nmap` | Обёртка над системным nmap |
 | `scapy` | ARP-сканирование L2 (требует root / Администратора) |
 | `pysnmp==4.4.12` | SNMP-опрос (ставится только на Python ≤ 3.11) |
+| `openpyxl` | Экспорт списка IP-адресов в Excel |
 | `mac-vendor-lookup` | Резервное определение производителя |
 | `pytest` | Тесты |
 
@@ -126,6 +127,9 @@ python net_topology.py --subnets 192.168.1.0/24,10.0.0.0/24 --parallel
 ```bash
 python net_topology.py --subnet 192.168.1.0/24 --no-gui --export network.html --export network.drawio
 python net_topology.py --load topology.json --no-gui --layout tree-lr --export network.svg
+
+# Список всех найденных IP с ОС и предполагаемым типом устройства
+python net_topology.py --subnet 192.168.1.0/24 --no-gui --export ip-list.xlsx
 ```
 
 ### Все аргументы
@@ -141,7 +145,7 @@ python net_topology.py --load topology.json --no-gui --layout tree-lr --export n
 | `--parallel` | Параллельное сканирование подсетей |
 | `--load FILE` | Открыть проект JSON |
 | `--layout MODE` | `tree` (по умолчанию), `tree-lr`, `organic`; с `--load` перекладывает схему |
-| `--export FILE` | Экспорт по расширению: `.html .svg .drawio .graphml .csv .json` (можно несколько раз) |
+| `--export FILE` | Экспорт по расширению: `.html .svg .drawio .graphml .csv .xlsx .json` (можно несколько раз) |
 | `--output FILE` | Сохранить проект JSON |
 | `--output-graphml FILE` | Экспорт GraphML |
 | `--update-oui` | Обновить OUI-базу и выйти |
@@ -158,7 +162,8 @@ python net_topology.py --load topology.json --no-gui --layout tree-lr --export n
 | **PNG** | Где угодно | Растр 2× (из GUI) |
 | **draw.io** | diagrams.net (веб и десктоп), Confluence, VS Code | Полностью редактируемая схема с иконками, зонами и свойствами устройств; из draw.io можно сохранить в Visio (.vsdx) |
 | **GraphML** | yEd, Gephi, Cytoscape, NetworkX | Координаты, цвета, все атрибуты устройств |
-| **CSV** | Excel, LibreOffice | Инвентаризация; разделитель `;`, кодировка UTF-8 с BOM |
+| **Excel (.xlsx)** | Excel, LibreOffice, Google Таблицы | Список всех найденных IP (строка на каждый IP): ОС, предполагаемый тип, уверенность, «почему такой тип», имя, MAC, производитель, порты, подсеть; фильтр, закреплённая шапка, лист «Сводка» |
+| **CSV** | Excel, LibreOffice | Инвентаризация устройств; разделитель `;`, кодировка UTF-8 с BOM |
 | **JSON** | Эта программа | Полный проект: устройства, связи, позиции, маршруты линий |
 
 В GUI: кнопка **Экспорт** на панели инструментов или **Файл → Экспорт**.

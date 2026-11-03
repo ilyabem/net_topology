@@ -576,6 +576,15 @@ class TestExporters:
         assert len(rows) - 1 == sum(1 for d in export_topo.devices.values()
                                     if not d.is_virtual)
 
+    def test_csv_formula_injection_escaped(self, tmp_path):
+        from exporters import export_topology
+        topo = NetworkTopology()
+        topo.add_device(Device(ip="10.0.0.5", hostname="=cmd|' /C calc'!A0"))
+        p = export_topology(topo, str(tmp_path / "t.csv"))
+        with open(p, encoding="utf-8-sig", newline="") as f:
+            rows = list(csv.reader(f, delimiter=";"))
+        assert rows[1][2] == "'=cmd|' /C calc'!A0"
+
     def test_unknown_format(self, export_topo, tmp_path):
         from exporters import export_topology
         with pytest.raises(ValueError):
@@ -590,6 +599,113 @@ class TestExporters:
 
 
 # ════════════════════════════════════════════════════════════════════════
+# Excel: список найденных IP-адресов
+# ════════════════════════════════════════════════════════════════════════
+
+class TestXlsxIpList:
+    @pytest.fixture()
+    def topo(self):
+        from analyzer import DeviceAnalyzer
+        a = DeviceAnalyzer(use_oui_db=False)
+        devs = [
+            Device(ip="10.0.0.1", hostname="gw", device_type="router",
+                   open_ports=[22, 161]),
+            Device(ip="10.0.0.10", hostname="DESKTOP-AB12CD3", ttl=128,
+                   open_ports=[135, 445, 3389]),
+            Device(ip="10.0.0.9", hostname="prn-2", open_ports=[9100]),
+            Device(ip="10.0.0.20", hostname='=HYPERLINK("http://x","y")'),
+        ]
+        for d in devs[1:]:
+            a.enrich(d)
+        devs[0].add_interface("172.16.0.1", "172.16.0.0/24")
+        devs.append(Device(ip="10.0.0.30", device_type="windows_endpoint"))
+        topo = NetworkTopology()
+        topo.build_from_results([
+            ScanResult(subnet="10.0.0.0/24", devices=devs,
+                       gateway_ip="10.0.0.1"),
+            # подсеть без шлюза → появится виртуальный «сегмент»
+            ScanResult(subnet="10.9.0.0/24", devices=[
+                Device(ip="10.9.0.5"), Device(ip="10.9.0.6")])])
+        return topo
+
+    def _load(self, topo, tmp_path):
+        openpyxl = pytest.importorskip("openpyxl")
+        from exporters import export_topology
+        p = export_topology(topo, str(tmp_path / "ips.xlsx"))
+        return p, openpyxl.load_workbook(p)
+
+    def test_one_row_per_ip_sorted(self, topo, tmp_path):
+        _p, wb = self._load(topo, tmp_path)
+        ws = wb["IP-адреса"]
+        ips = [r[0] for r in ws.iter_rows(min_row=2, values_only=True)]
+        real_ips = sorted((ip for d in topo.devices.values()
+                           if not d.is_virtual for ip in d.all_ips()),
+                          key=lambda ip: tuple(int(x) for x in ip.split(".")))
+        assert ips == real_ips                      # без сегментов, по числу
+        assert ips.index("10.0.0.9") < ips.index("10.0.0.10")
+        assert "172.16.0.1" in ips                  # второй интерфейс шлюза
+
+    def test_columns_and_layout(self, topo, tmp_path):
+        from exporters import XLSX_COLUMNS
+        _p, wb = self._load(topo, tmp_path)
+        ws = wb["IP-адреса"]
+        header = [c.value for c in ws[1]]
+        assert header == [t for t, _w in XLSX_COLUMNS]
+        for col in ("IP", "ОС", "Предполагаемый тип", "Почему такой тип",
+                    "Уверенность, %", "MAC", "Производитель",
+                    "Открытые порты", "Подсеть"):
+            assert col in header
+        assert ws.freeze_panes == "B2"
+        assert ws.auto_filter.ref.startswith("A1:")
+        assert wb.sheetnames == ["IP-адреса", "Сводка"]
+
+    def test_values_human_readable(self, topo, tmp_path):
+        _p, wb = self._load(topo, tmp_path)
+        rows = {r[0]: r for r in wb["IP-адреса"].iter_rows(min_row=2,
+                                                            values_only=True)}
+        pc = rows["10.0.0.10"]
+        assert pc[3] == "Windows" and pc[4] == "Windows ПК"
+        assert isinstance(pc[5], int) and pc[5] > 0
+        assert "windows_endpoint" not in pc[6] and "(+" not in pc[6]
+        assert "3389 RDP" in pc[9]
+        printer = rows["10.0.0.9"]
+        assert printer[4] == "Принтер/МФУ" and "9100" in printer[6]
+        assert rows["10.0.0.1"][12] == "172.16.0.1"     # другие IP устройства
+        assert rows["10.0.0.30"][3] == "не определена"
+
+    def test_formula_injection_stored_as_text(self, topo, tmp_path):
+        import zipfile
+        p, wb = self._load(topo, tmp_path)
+        cell = next(c for c in wb["IP-адреса"]["C"]
+                    if str(c.value).startswith("=HYPERLINK"))
+        assert cell.data_type == "s"
+        for name in zipfile.ZipFile(p).namelist():
+            if name.startswith("xl/worksheets/"):
+                assert b"<f>" not in zipfile.ZipFile(p).read(name)
+
+    def test_summary_sheet(self, topo, tmp_path):
+        _p, wb = self._load(topo, tmp_path)
+        values = {r[0]: r[1] for r in wb["Сводка"].iter_rows(values_only=True)
+                  if r[0]}
+        # 5 устройств подсети 10.0.0.0/24 (у шлюза 2 IP) + 2 в 10.9.0.0/24
+        assert values["Найдено IP-адресов"] == 8
+        assert values["Из них с несколькими IP"] == 1
+
+    def test_listed_in_gui_formats(self):
+        from exporters import EXPORT_FORMATS, EXPORTERS
+        assert ".xlsx" in EXPORT_FORMATS and ".xlsx" in EXPORTERS
+
+    def test_humanize_evidence(self):
+        from exporters import humanize_evidence
+        dev = Device(ip="1.1.1.1", device_type="printer", evidence=[
+            "Порт 80 (HTTP) → linux_server (+2)",
+            "Порт 9100 (JetDirect) однозначно → printer (+15)",
+            "ОС: TTL 64 → Linux (+1.5)"])
+        assert humanize_evidence(dev) == \
+            "Порт 9100 (JetDirect) однозначно → Принтер/МФУ"
+
+
+# ════════════════════════════════════════════════════════════════════════
 # CLI
 # ════════════════════════════════════════════════════════════════════════
 
@@ -601,12 +717,14 @@ class TestCLI:
         topo.save_json(str(src))
         out_html = tmp_path / "o.html"
         out_drawio = tmp_path / "o.drawio"
+        out_xlsx = tmp_path / "o.xlsx"
         monkeypatch.setattr(sys, "argv", [
             "net_topology.py", "--load", str(src), "--no-gui",
             "--layout", "tree-lr", "--export", str(out_html),
-            "--export", str(out_drawio)])
+            "--export", str(out_drawio), "--export", str(out_xlsx)])
         net_topology.main()
         assert out_html.exists() and out_drawio.exists()
+        assert out_xlsx.exists() and out_xlsx.read_bytes()[:2] == b"PK"
         assert "ОБНАРУЖЕННЫЕ УСТРОЙСТВА" in capsys.readouterr().out
 
 
@@ -674,6 +792,21 @@ class TestGUI:
         w._scene.delete_device(ids[3])
         assert ids[3] not in w.topology.devices
         assert len(w._scene.nodes) == len(w.topology.devices)
+        w._modified = False
+        w.close()
+
+    def test_export_menu_has_excel_ip_list(self, qapp, tmp_path, monkeypatch):
+        gui, w = self._window(qapp, tmp_path, monkeypatch)
+        titles = [a.text() for a in w.export_menu.actions()]
+        assert "Список IP-адресов Excel" in titles
+        pytest.importorskip("openpyxl")
+        target = tmp_path / "gui_ips.xlsx"
+        monkeypatch.setattr(gui.QFileDialog, "getSaveFileName",
+                            staticmethod(lambda *a, **k: (str(target), "")))
+        action = next(a for a in w.export_menu.actions()
+                      if a.text() == "Список IP-адресов Excel")
+        action.trigger()
+        assert target.exists() and target.stat().st_size > 0
         w._modified = False
         w.close()
 

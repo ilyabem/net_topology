@@ -10,6 +10,9 @@ exporters.py — выгрузка топологии в переносимые �
             Confluence, VS Code). Из draw.io можно сохранить в .vsdx (Visio).
   .graphml  граф для yEd / Gephi / Cytoscape (с координатами и цветами).
   .csv      инвентаризация устройств для Excel / LibreOffice (разделитель «;»).
+  .xlsx     список всех найденных IP-адресов (строка на каждый IP): ОС,
+            предполагаемый тип, уверенность и обоснование, MAC, производитель,
+            порты; лист «Сводка». Требует openpyxl.
   .json     полный формат проекта (открывается обратно в программе).
 
 Использование:
@@ -25,6 +28,7 @@ import html
 import json
 import logging
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime
@@ -49,6 +53,7 @@ EXPORT_FORMATS: dict[str, str] = {
     ".svg":     "Векторная схема SVG (*.svg)",
     ".drawio":  "Схема draw.io / diagrams.net (*.drawio)",
     ".graphml": "Граф GraphML для yEd / Gephi (*.graphml)",
+    ".xlsx":    "Список IP-адресов Excel (*.xlsx)",
     ".csv":     "Инвентаризация CSV (*.csv)",
     ".json":    "Проект Net Topology (*.json)",
 }
@@ -868,13 +873,250 @@ def export_csv(topology: "NetworkTopology", path: str) -> None:
     def write(f) -> None:
         w = csv.writer(f, delimiter=";", quoting=csv.QUOTE_MINIMAL)
         w.writerow(CSV_COLUMNS)
-        w.writerows(rows)
+        w.writerows([_safe_cell_text(v) for v in row] for row in rows)
     _atomic_write(path, write, encoding="utf-8-sig", newline="")
 
 
 def _ip_key(ip: str) -> tuple:
     from model import ip_sort_key
     return ip_sort_key(ip)
+
+
+_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _safe_cell_text(value):
+    """
+    Защита от CSV/Excel-инъекций: имена хостов, sysDescr и т.п. приходят из
+    сети, и строка вида «=HYPERLINK(...)» стала бы формулой в Excel.
+    """
+    if isinstance(value, str) and value.startswith(_FORMULA_START):
+        return "'" + value
+    return value
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Excel: список всех найденных IP-адресов
+# ═══════════════════════════════════════════════════════════════════════════
+
+XLSX_COLUMNS: list[tuple[str, float]] = [
+    ("IP", 16),
+    ("Подсеть", 17),
+    ("Имя", 26),
+    ("ОС", 24),
+    ("Предполагаемый тип", 22),
+    ("Уверенность, %", 13),
+    ("Почему такой тип", 62),
+    ("MAC", 19),
+    ("Производитель", 28),
+    ("Открытые порты", 30),
+    ("Шлюз", 8),
+    ("Хопов", 8),
+    ("Другие IP устройства", 24),
+]
+
+_EVIDENCE_WEIGHT = re.compile(r"\s*\(\+[\d.]+\)\s*$")
+_EVIDENCE_TYPE = re.compile(r"→\s*([a-z_]+)$")
+
+
+def humanize_evidence(dev: "Device", limit: int = 4) -> str:
+    """
+    Пояснение классификации для людей: сначала признаки в пользу итогового
+    типа, внутренние идентификаторы типов заменены названиями, веса убраны.
+    """
+    supporting: list[str] = []
+    other: list[str] = []
+    for raw in dev.evidence:
+        if raw.startswith("ОС:"):
+            continue
+        text = _EVIDENCE_WEIGHT.sub("", raw)
+        m = _EVIDENCE_TYPE.search(text)
+        if m:
+            dtype = m.group(1)
+            label = DEVICE_TYPE_LABELS.get(dtype, dtype)
+            text = text[:m.start(1)] + label
+            (supporting if dtype == dev.device_type else other).append(text)
+        else:
+            supporting.append(text)
+    lines = (supporting or other)[:limit]
+    return "\n".join(lines)
+
+
+def _ports_text(ports: list[int]) -> str:
+    try:
+        from analyzer import PORT_NAMES
+    except Exception:  # noqa: BLE001 — экспорт не должен зависеть от SNMP-библиотек
+        PORT_NAMES = {}
+    return ", ".join(f"{p} {PORT_NAMES[p]}" if p in PORT_NAMES else str(p)
+                     for p in sorted(ports))
+
+
+def ip_rows(topology: "NetworkTopology") -> list[list]:
+    """Строки таблицы: по одной на каждый найденный IP (не на устройство)."""
+    rows = []
+    for dev in topology.devices.values():
+        if dev.is_virtual:
+            continue
+        name = dev.display_name()
+        name = "" if name == dev.ip else name
+        type_label = DEVICE_TYPE_LABELS.get(dev.device_type, dev.device_type)
+        os_text = dev.os_name or "не определена"
+        reason = humanize_evidence(dev)
+        ports = _ports_text(dev.open_ports)
+        all_ips = dev.all_ips()
+        for iface in dev.interfaces:
+            others = ", ".join(ip for ip in all_ips if ip != iface.ip)
+            rows.append([
+                iface.ip, iface.subnet or dev.subnet, name, os_text,
+                type_label, dev.confidence or None, reason, dev.mac or "",
+                dev.vendor or "", ports, "да" if dev.is_gateway else "",
+                dev.hops, others,
+            ])
+    rows.sort(key=lambda r: _ip_key(r[0]))
+    return rows
+
+
+def _tint(hex_color: str, amount: float = 0.72) -> str:
+    """Светлый оттенок цвета типа для заливки ячейки (RRGGBB без #)."""
+    h = hex_color.lstrip("#")
+    rgb = [int(h[i:i + 2], 16) for i in (0, 2, 4)]
+    return "".join(f"{int(c + (255 - c) * amount):02X}" for c in rgb)
+
+
+def export_xlsx(topology: "NetworkTopology", path: str) -> None:
+    """Excel-книга: лист «IP-адреса» (строка на IP) и лист «Сводка»."""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+        from openpyxl.utils import get_column_letter
+    except ImportError as exc:
+        raise RuntimeError("Для экспорта в Excel установите пакет openpyxl: "
+                           "pip install openpyxl") from exc
+
+    rows = ip_rows(topology)
+    wb = Workbook()
+    wb.properties.creator = f"{APP_NAME} {APP_VERSION}"
+    wb.properties.title = _title(topology)
+
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="2C3E50")
+    thin = Side(style="thin", color="D5D8DC")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    top_left = Alignment(vertical="top", wrap_text=False)
+    top_wrap = Alignment(vertical="top", wrap_text=True)
+    conf_fills = [(70, PatternFill("solid", fgColor="D5F5E3")),
+                  (40, PatternFill("solid", fgColor="FCF3CF")),
+                  (0, PatternFill("solid", fgColor="FADBD8"))]
+    type_fills: dict[str, PatternFill] = {}
+
+    ws = wb.active
+    ws.title = "IP-адреса"
+    for col, (title, width) in enumerate(XLSX_COLUMNS, start=1):
+        cell = ws.cell(row=1, column=col, value=title)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(vertical="center", wrap_text=True)
+        cell.border = border
+        ws.column_dimensions[get_column_letter(col)].width = width
+    ws.row_dimensions[1].height = 30
+
+    label_to_type = {v: k for k, v in DEVICE_TYPE_LABELS.items()}
+    wrap_cols = {7, 13}
+    for r, row in enumerate(rows, start=2):
+        for c, value in enumerate(row, start=1):
+            cell = ws.cell(row=r, column=c)
+            if isinstance(value, str):
+                # Строки из сети всегда текст, даже если начинаются с «=»
+                cell.value = value
+                cell.data_type = "s"
+            else:
+                cell.value = value
+            cell.border = border
+            cell.alignment = top_wrap if c in wrap_cols else top_left
+        dtype = label_to_type.get(row[4], "unknown")
+        if dtype not in type_fills:
+            type_fills[dtype] = PatternFill("solid",
+                                            fgColor=_tint(type_color(dtype)))
+        ws.cell(row=r, column=5).fill = type_fills[dtype]
+        conf = row[5]
+        if conf is not None:
+            ws.cell(row=r, column=6).fill = next(f for lim, f in conf_fills
+                                                 if conf >= lim)
+            ws.cell(row=r, column=6).alignment = Alignment(
+                vertical="top", horizontal="center")
+        lines = max(1, str(row[6]).count("\n") + 1)
+        ws.row_dimensions[r].height = min(15 * lines + 2, 90)
+
+    last_col = get_column_letter(len(XLSX_COLUMNS))
+    ws.freeze_panes = "B2"
+    ws.auto_filter.ref = f"A1:{last_col}{max(len(rows) + 1, 1)}"
+    ws.sheet_view.zoomScale = 100
+
+    _xlsx_summary(wb.create_sheet("Сводка"), topology, rows, header_font,
+                  header_fill, border)
+
+    directory = os.path.dirname(os.path.abspath(path))
+    fd, tmp = tempfile.mkstemp(prefix=".export-", suffix=".xlsx", dir=directory)
+    os.close(fd)
+    try:
+        wb.save(tmp)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _xlsx_summary(ws, topology: "NetworkTopology", rows: list[list],
+                  header_font, header_fill, border) -> None:
+    from openpyxl.styles import Font
+    ws.column_dimensions["A"].width = 34
+    ws.column_dimensions["B"].width = 14
+    ws["A1"] = _title(topology)
+    ws["A1"].font = Font(bold=True, size=14)
+    ws["A2"] = _subtitle(topology)
+    ws["A2"].font = Font(color="5D6D7E")
+
+    devices = [d for d in topology.devices.values() if not d.is_virtual]
+    stats = [("Найдено IP-адресов", len(rows)),
+             ("Устройств", len(devices)),
+             ("Из них с несколькими IP", sum(len(d.interfaces) > 1
+                                              for d in devices)),
+             ("ОС определена", sum(bool(d.os_name) for d in devices)),
+             ("Тип не определён", sum(d.device_type == "unknown"
+                                      for d in devices))]
+    row = 4
+    for label, value in stats:
+        ws.cell(row=row, column=1, value=label)
+        ws.cell(row=row, column=2, value=value)
+        row += 1
+
+    def table(title: str, items: list[tuple[str, int]]) -> None:
+        nonlocal row
+        row += 1
+        for col, text in enumerate((title, "Количество"), start=1):
+            cell = ws.cell(row=row, column=col, value=text)
+            cell.font, cell.fill, cell.border = header_font, header_fill, border
+        row += 1
+        for name, count in items:
+            a = ws.cell(row=row, column=1, value=name)
+            a.data_type = "s"           # значение из сети — всегда текст
+            ws.cell(row=row, column=2, value=count)
+            a.border = ws.cell(row=row, column=2).border = border
+            row += 1
+
+    def counted(values: list[str]) -> list[tuple[str, int]]:
+        counts: dict[str, int] = {}
+        for v in values:
+            counts[v] = counts.get(v, 0) + 1
+        return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+
+    table("Тип устройства", counted([r[4] for r in rows]))
+    table("ОС", counted([r[3] for r in rows]))
+    table("Подсеть", sorted(counted([r[1] or "—" for r in rows]),
+                            key=lambda kv: _ip_key(kv[0].split("/")[0])))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -892,6 +1134,7 @@ EXPORTERS: dict[str, Callable[["NetworkTopology", str], None]] = {
     ".drawio":  export_drawio,
     ".graphml": export_graphml,
     ".csv":     export_csv,
+    ".xlsx":    export_xlsx,
     ".json":    export_json,
 }
 

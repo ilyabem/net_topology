@@ -20,7 +20,8 @@ net_topology.py — точка входа.
     python net_topology.py --subnet 192.168.1.0/24 --no-gui --export net.html --export net.drawio
     python net_topology.py --load topology.json --no-gui --layout tree-lr --export net.svg
 
-Форматы --export (по расширению): .html .svg .drawio .graphml .csv .json
+Форматы --export (по расширению): .html .svg .drawio .graphml .csv .xlsx .json
+  .xlsx — список всех найденных IP: ОС, предполагаемый тип, обоснование
 """
 
 import argparse
@@ -65,7 +66,7 @@ def parse_args() -> argparse.Namespace:
                    help="Экспортировать топологию в GraphML-файл")
     p.add_argument("--export", metavar="FILE", action="append", default=[],
                    help="Экспорт по расширению: .html .svg .drawio .graphml "
-                        ".csv .json (можно указать несколько раз)")
+                        ".csv .xlsx .json (можно указать несколько раз)")
     p.add_argument("--layout", choices=["tree", "tree-lr", "organic"],
                    help="Раскладка схемы: tree (по умолчанию), tree-lr, "
                         "organic. С --load перекладывает загруженную схему")
