@@ -477,6 +477,16 @@ class TestAnalyzerV2:
             [0, 3, 0, 8, 0, 5]
         assert estimate_hops(None) is None
 
+    @pytest.mark.skipif(sys.version_info >= (3, 12),
+                        reason="pysnmp 4.4.12 ставится только на Python <= 3.11")
+    def test_snmp_backend_loads_with_pinned_pysnmp(self):
+        """pysnmp 4.4.12 + pyasn1 >= 0.6.1 молча отключали SNMP."""
+        pytest.importorskip("pysnmp")
+        import analyzer
+        assert analyzer.SNMP_AVAILABLE
+        assert analyzer._snmp_backend in ("classic-4x", "lextudio-sync",
+                                          "netsnmp-cli")
+
     def test_laa_ignored_when_vendor_known(self):
         from analyzer import DeviceAnalyzer
         from oui_db import OUIDatabase, parse_manuf

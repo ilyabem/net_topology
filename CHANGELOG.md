@@ -41,6 +41,11 @@ All notable changes to this project will be documented in this file.
 - CI не запускался (ветка `main` вместо `master`, неверный путь к тестам);
   удалён дублирующий `test_topology.py` в корне.
 - `pysnmp==4.4.12` ставится только на Python ≤ 3.11; `numpy` больше не нужен.
+- SNMP молча не работал: `pysnmp 4.4.12` несовместим с `pyasn1` ≥ 0.6.1 —
+  версия `pyasn1` закреплена.
+- `pip install -r requirements.txt` падал на Windows (кириллица в комментариях
+  при кодировке cp1252) — файл переведён в ASCII. CI ставит зависимости
+  именно из него.
 
 ## [1.3.0] - 2026-05-25
 ### Added

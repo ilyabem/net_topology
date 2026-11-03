@@ -712,12 +712,13 @@ def render_drawio(topology: "NetworkTopology") -> str:
 
     title_style = ("text;html=1;align=left;verticalAlign=top;fontSize=18;"
                    "fontStyle=1;fontColor=#1b2631;")
+    # Значение собирается заранее: многострочные выражения и экранированные
+    # кавычки внутри f-строки допустимы только с Python 3.12 (PEP 701)
+    title_value = (html.escape(_title(topology))
+                   + '<br><font style="font-size:11px" color="#5d6d7e">'
+                   + html.escape(_subtitle(topology)) + "</font>")
     cells.append(
-        f'<mxCell id="title" value={_a(html.escape(_title(topology)) + "<br>"
-                                        "<font style=\"font-size:11px\" "
-                                        "color=\"#5d6d7e\">"
-                                        + html.escape(_subtitle(topology))
-                                        + "</font>")} '
+        f'<mxCell id="title" value={_a(title_value)} '
         f'style={_a(title_style)} vertex="1" parent="1">'
         f'<mxGeometry x="{_f(PAD)}" y="10" width="900" height="50" '
         f'as="geometry"/></mxCell>')
